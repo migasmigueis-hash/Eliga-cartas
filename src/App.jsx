@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { supabase } from './lib/supabaseClient';
 
 
 /* ============================================================
@@ -181,6 +182,7 @@ const cardIdentity = (c) => {
 /* ---------- Escolhas (estilo Wonder Pick): conjunto global de 5 cartas que
    renova de 6 em 6 horas; gasta 1 Escolha para virar, baralhar e escolher às cegas */
 const PICK_SLOT_MS = 6 * 3600 * 1000;
+const EMPTY_PREV = { groups: null, qual: [], groupResult: null, bracket: null, qf: [null, null, null, null], sf: [null, null], fin: null, resolved: null, rewardClaimed: false };
 function mulberry32(a) {
   return function () {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -646,9 +648,6 @@ async function packToPng(cards) {
   return cv.toDataURL("image/png");
 }
 
-// hash de password só para o protótipo — em produção a autenticação vive no backend do site
-function pHash(s) { let h = 5381; for (let i = 0; i < s.length; i++) { h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; } return h.toString(36); }
-
 // armazenamento: localStorage em produção (Vercel), com fallback em memória
 const memStore = {};
 const store = {
@@ -666,8 +665,40 @@ const store = {
   },
 };
 
-// conta pré-criada para testes
-const SEED_ACCOUNTS = { admin: { p: pHash("admin"), criado: 0 } };
+// Fase 2: na primeira entrada de uma conta sem progresso ainda guardado no Supabase,
+// tenta recuperar o que foi jogado localmente (Fase 0/1) com o mesmo nome de jogador.
+async function loadLegacyLocalState(username) {
+  try {
+    const rawCol = await store.get("eliga-tcg-col-" + username);
+    if (rawCol === null) return null; // nada para migrar
+    const collection = JSON.parse(rawCol || "{}");
+    const meta = JSON.parse((await store.get("eliga-tcg-meta-" + username)) || "{}");
+    const rawL = await store.get("eliga-tcg-lineup-" + username);
+    let lineup = { ids: [null, null, null], captain: null };
+    if (rawL) {
+      const d = JSON.parse(rawL);
+      lineup = Array.isArray(d) ? { ids: d, captain: null } : { ids: d.ids || [null, null, null], captain: d.captain ?? null };
+    }
+    const hist = JSON.parse((await store.get("eliga-tcg-hist-" + username)) || "[]");
+    const codesUsed = JSON.parse((await store.get("eliga-tcg-codes-" + username)) || "[]");
+    let escolhas = parseInt((await store.get("eliga-tcg-escolhas-" + username)) || "0") || 0;
+    const seeded = await store.get("eliga-tcg-esc-seed-" + username);
+    if (!seeded) escolhas += 5;
+    const rawSlot = await store.get("eliga-tcg-esc-slot-" + username);
+    const escSlot = rawSlot ? parseInt(rawSlot) : Math.floor(Date.now() / PICK_SLOT_MS);
+    const picksUsed = JSON.parse((await store.get("eliga-tcg-picksused-" + username)) || "{}");
+    const jHist = JSON.parse((await store.get("eliga-tcg-jhist-" + username)) || "[]");
+    const vitrine = JSON.parse((await store.get("eliga-tcg-vitrine-" + username)) || "[null,null,null]");
+    const rawPr = await store.get("eliga-tcg-prev-" + username);
+    const prevRaw = rawPr ? JSON.parse(rawPr) : null;
+    const prev = prevRaw && prevRaw.groupResult !== undefined ? prevRaw : EMPTY_PREV;
+    const muted = (await store.get("eliga-tcg-mute")) === "1";
+    const onboardDone = !!(await store.get("eliga-tcg-onboard-" + username));
+    return { collection, meta, lineup, hist, codesUsed, escolhas, escSlot, picksUsed, jHist, vitrine, prev, muted, onboardDone };
+  } catch (e) {
+    return null;
+  }
+}
 
 const FONT = "'Chakra Petch',sans-serif";
 const btn = (primary) => ({
@@ -968,35 +999,59 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
   );
 }
 
-/* ---------- ecrã de entrada (login local do jogo) ---------- */
+/* ---------- ecrã de entrada (Supabase Auth: email + palavra-passe) ---------- */
+// nome de jogador guardado em user_metadata.username no registo;
+// fallback (contas criadas fora deste formulário) deriva-se do email.
+function deriveUsername(user) {
+  if (!user) return null;
+  const meta = user.user_metadata?.username;
+  if (meta && /^[a-z0-9_]{3,16}$/.test(meta)) return meta;
+  const local = (user.email || "").split("@")[0].toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 16);
+  return local.length >= 3 ? local : "jogador";
+}
+
+function authErrorMessage(err) {
+  const msg = err?.message || "";
+  if (/already registered/i.test(msg)) return "Já existe uma conta com este email — tenta iniciar sessão.";
+  if (/invalid login credentials/i.test(msg)) return "Email ou palavra-passe incorretos.";
+  if (/password should be at least/i.test(msg)) return "A palavra-passe deve ter pelo menos 6 caracteres.";
+  if (/unable to validate email|invalid email/i.test(msg)) return "Email inválido.";
+  if (/email not confirmed/i.test(msg)) return "Confirma o teu email (verifica a caixa de entrada) antes de entrares.";
+  if (/rate limit/i.test(msg)) return "Demasiadas tentativas — espera um pouco e tenta novamente.";
+  return msg || "Ocorreu um erro. Tenta novamente.";
+}
+
 function AuthScreen({ onLogin }) {
   const [mode, setMode] = useState("login");
   const [user, setUser] = useState("");
+  const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
-    const u = user.trim().toLowerCase();
-    if (!/^[a-z0-9_]{3,16}$/.test(u)) { setError("O nome de jogador deve ter 3–16 caracteres (letras, números, _)."); return; }
-    if (pass.length < 4) { setError("A palavra-passe deve ter pelo menos 4 caracteres."); return; }
-    setBusy(true); setError("");
-    let accounts = { ...SEED_ACCOUNTS };
-    try {
-      const raw = await store.get("eliga-tcg-contas");
-      if (raw) accounts = { ...SEED_ACCOUNTS, ...JSON.parse(raw) };
-    } catch (e) { /* ainda não existem contas */ }
+    const em = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { setError("Indica um email válido."); return; }
+    if (pass.length < 6) { setError("A palavra-passe deve ter pelo menos 6 caracteres."); return; }
+    setBusy(true); setError(""); setInfo("");
+
     if (mode === "registo") {
-      if (accounts[u]) { setError("Esse nome de jogador já existe. Inicia sessão ou escolhe outro."); setBusy(false); return; }
-      accounts[u] = { p: pHash(pass), criado: Date.now() };
-      await store.set("eliga-tcg-contas", JSON.stringify(accounts));
-      await store.set("eliga-tcg-sessao", u);
-      onLogin(u);
+      const u = user.trim().toLowerCase();
+      if (!/^[a-z0-9_]{3,16}$/.test(u)) { setError("O nome de jogador deve ter 3–16 caracteres (letras, números, _)."); setBusy(false); return; }
+      const { data, error: err } = await supabase.auth.signUp({
+        email: em, password: pass, options: { data: { username: u } },
+      });
+      if (err) { setError(authErrorMessage(err)); setBusy(false); return; }
+      if (!data.session) {
+        setInfo("Conta criada! Verifica o teu email para confirmar a conta e depois inicia sessão.");
+        setMode("login"); setBusy(false); return;
+      }
+      onLogin(deriveUsername(data.user));
     } else {
-      if (!accounts[u]) { setError("Conta não encontrada. Cria uma conta primeiro."); setBusy(false); return; }
-      if (accounts[u].p !== pHash(pass)) { setError("Palavra-passe incorreta."); setBusy(false); return; }
-      await store.set("eliga-tcg-sessao", u);
-      onLogin(u);
+      const { data, error: err } = await supabase.auth.signInWithPassword({ email: em, password: pass });
+      if (err) { setError(authErrorMessage(err)); setBusy(false); return; }
+      onLogin(deriveUsername(data.user));
     }
   };
 
@@ -1009,26 +1064,33 @@ function AuthScreen({ onLogin }) {
         <div style={{ textAlign: "center", fontFamily: FONT, fontWeight: 700, letterSpacing: 3, fontSize: 13, color: "#1BF5A3", marginBottom: 20 }}>CARTAS COLECIONÁVEIS</div>
         <div style={{ display: "flex", gap: 6, marginBottom: 20, background: "#0A1126", borderRadius: 10, padding: 4 }}>
           {[["login", "Iniciar sessão"], ["registo", "Criar conta"]].map(([k, label]) => (
-            <button key={k} onClick={() => { setMode(k); setError(""); }} style={{ flex: 1, fontFamily: FONT, fontWeight: 600, fontSize: 13, padding: "9px 0", borderRadius: 8, cursor: "pointer", border: "none", background: mode === k ? "#1BF5A3" : "transparent", color: mode === k ? "#04140c" : "#9FB0C8" }}>{label}</button>
+            <button key={k} onClick={() => { setMode(k); setError(""); setInfo(""); }} style={{ flex: 1, fontFamily: FONT, fontWeight: 600, fontSize: 13, padding: "9px 0", borderRadius: 8, cursor: "pointer", border: "none", background: mode === k ? "#1BF5A3" : "transparent", color: mode === k ? "#04140c" : "#9FB0C8" }}>{label}</button>
           ))}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {mode === "registo" && (
+            <div>
+              <label style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>NOME DE JOGADOR</label>
+              <input style={{ ...input, marginTop: 6 }} value={user} onChange={(e) => setUser(e.target.value)} placeholder="ex: campeao_slb" maxLength={16} onKeyDown={(e) => e.key === "Enter" && submit()} />
+            </div>
+          )}
           <div>
-            <label style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>NOME DE JOGADOR</label>
-            <input style={{ ...input, marginTop: 6 }} value={user} onChange={(e) => setUser(e.target.value)} placeholder="ex: campeao_slb" maxLength={16} onKeyDown={(e) => e.key === "Enter" && submit()} />
+            <label style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>EMAIL</label>
+            <input style={{ ...input, marginTop: 6 }} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@exemplo.com" onKeyDown={(e) => e.key === "Enter" && submit()} />
           </div>
           <div>
             <label style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>PALAVRA-PASSE</label>
             <input style={{ ...input, marginTop: 6 }} type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" onKeyDown={(e) => e.key === "Enter" && submit()} />
           </div>
           {error && <div style={{ fontSize: 12, color: "#ff7b8a", background: "#ff7b8a14", border: "1px solid #ff7b8a33", borderRadius: 8, padding: "8px 12px" }}>{error}</div>}
+          {info && <div style={{ fontSize: 12, color: "#1BF5A3", background: "#1BF5A314", border: "1px solid #1BF5A333", borderRadius: 8, padding: "8px 12px" }}>{info}</div>}
           <button onClick={submit} disabled={busy} style={{ ...btn(true), width: "100%", opacity: busy ? 0.6 : 1, marginTop: 4 }}>
-            {busy ? "A entrar…" : mode === "registo" ? "Criar conta e jogar" : "Entrar"}
+            {busy ? "Um momento…" : mode === "registo" ? "Criar conta e jogar" : "Entrar"}
           </button>
         </div>
         <div style={{ fontSize: 11, color: "#44557a", textAlign: "center", marginTop: 18, lineHeight: 1.5 }}>
-          Conta exclusiva do jogo de cartas — independente do resto do site.<br />A tua coleção fica associada a este nome de jogador.<br />
-          <span style={{ color: "#1BF5A3" }}>Conta de testes: admin / admin</span>
+          Conta da eLiga Cartas — a tua coleção fica associada a esta conta.<br />
+          {mode === "registo" ? "Já tens conta? Muda para \"Iniciar sessão\"." : "Ainda sem conta? Cria uma em \"Criar conta\"."}
         </div>
       </div>
     </div>
@@ -1119,6 +1181,7 @@ const TRADE_COST = 10;
 
 function App() {
   const [username, setUsername] = useState(null);
+  const [userId, setUserId] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [tab, setTab] = useState("loja");
   const [collection, setCollection] = useState({});
@@ -1139,7 +1202,6 @@ function App() {
   const [vitrine, setVitrine] = useState([null, null, null]);
   const [vitrinePick, setVitrinePick] = useState(null);
   const [directTrade, setDirectTrade] = useState(null);
-  const EMPTY_PREV = { groups: null, qual: [], groupResult: null, bracket: null, qf: [null, null, null, null], sf: [null, null], fin: null, resolved: null, rewardClaimed: false };
   const [prev, setPrev] = useState(EMPTY_PREV);
   const [escolhas, setEscolhas] = useState(0);
   const [escSlot, setEscSlot] = useState(null);
@@ -1158,116 +1220,106 @@ function App() {
   const [zoom, setZoom] = useState(null);
   const loaded = useRef(false);
 
-  // sessão existente + bump global das Escolhas
+  // sessão Supabase Auth + bump global das Escolhas
   useEffect(() => {
+    let active = true;
     (async () => {
-      const sess = await store.get("eliga-tcg-sessao");
-      if (sess) setUsername(sess);
+      const { data } = await supabase.auth.getSession();
+      if (active && data.session) {
+        setUserId(data.session.user.id);
+        setUsername(deriveUsername(data.session.user));
+      }
       const bump = await store.get("eliga-tcg-picks-bump");
       if (bump) setPicksBump(parseInt(bump) || 0);
-      setAuthChecked(true);
+      if (active) setAuthChecked(true);
     })();
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUserId(session ? session.user.id : null);
+      setUsername(session ? deriveUsername(session.user) : null);
+    });
     const t = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(t);
+    return () => { active = false; listener.subscription.unsubscribe(); clearInterval(t); };
   }, []);
 
-  // carregar coleção do utilizador
+  // carregar progresso do utilizador a partir do Supabase (profiles.state),
+  // com migração pontual do que existia em localStorage nas Fases 0/1
   useEffect(() => {
-    if (!username) return;
+    if (!username || !userId) return;
     loaded.current = false;
     (async () => {
-      try {
-        const raw = await store.get("eliga-tcg-col-" + username);
-        setCollection(raw ? JSON.parse(raw) : {});
-      } catch (e) { setCollection({}); }
-      try {
-        const rawM = await store.get("eliga-tcg-meta-" + username);
-        const m = rawM ? JSON.parse(rawM) : {};
-        const dias = m.dias || [];
-        const t = todayStr();
-        setMeta({ dias: dias.includes(t) ? dias : [...dias, t].slice(-90), packs: m.packs || {}, claims: m.claims || {}, pity: m.pity || 0, trocas: m.trocas || {}, escUso: m.escUso || {}, trivia: m.trivia || {} });
-      } catch (e) { setMeta({ dias: [todayStr()], packs: {}, claims: {}, pity: 0, trivia: {} }); }
-      try {
-        const rawL = await store.get("eliga-tcg-lineup-" + username);
-        if (rawL) {
-          const d = JSON.parse(rawL);
-          if (Array.isArray(d)) { setLineup(d); setCaptain(null); }
-          else { setLineup(d.ids || [null, null, null]); setCaptain(d.captain ?? null); }
-        } else { setLineup([null, null, null]); setCaptain(null); }
-      } catch (e) { setLineup([null, null, null]); setCaptain(null); }
-      try {
-        const rawH = await store.get("eliga-tcg-hist-" + username);
-        setHist(rawH ? JSON.parse(rawH) : []);
-      } catch (e) { setHist([]); }
-      try {
-        const rawC = await store.get("eliga-tcg-codes-" + username);
-        setCodesUsed(rawC ? JSON.parse(rawC) : []);
-      } catch (e) { setCodesUsed([]); }
-      try {
-        const rawE = await store.get("eliga-tcg-escolhas-" + username);
-        let e0 = rawE ? parseInt(rawE) || 0 : 0;
-        // nesta fase, todas as contas arrancam com 5 Escolhas de oferta (uma vez)
-        const seeded = await store.get("eliga-tcg-esc-seed-" + username);
-        if (!seeded) { e0 += 5; await store.set("eliga-tcg-esc-seed-" + username, "1"); }
-        setEscolhas(e0);
-        const rawSlot = await store.get("eliga-tcg-esc-slot-" + username);
-        setEscSlot(rawSlot ? parseInt(rawSlot) : Math.floor(Date.now() / PICK_SLOT_MS));
-      } catch (e) { setEscolhas(5); setEscSlot(Math.floor(Date.now() / PICK_SLOT_MS)); }
-      try {
-        const rawPU = await store.get("eliga-tcg-picksused-" + username);
-        setPicksUsed(rawPU ? JSON.parse(rawPU) : {});
-      } catch (e) { setPicksUsed({}); }
-      try {
-        const rawJ = await store.get("eliga-tcg-jhist-" + username);
-        setJHist(rawJ ? JSON.parse(rawJ) : []);
-      } catch (e) { setJHist([]); }
-      try {
-        const rawV = await store.get("eliga-tcg-vitrine-" + username);
-        setVitrine(rawV ? JSON.parse(rawV) : [null, null, null]);
-      } catch (e) { setVitrine([null, null, null]); }
-      try {
-        const rawPr = await store.get("eliga-tcg-prev-" + username);
-        const d = rawPr ? JSON.parse(rawPr) : null;
-        // migração: o formato antigo (top8/champ) é descartado
-        setPrev(d && d.groupResult !== undefined ? d : EMPTY_PREV);
-      } catch (e) { setPrev(EMPTY_PREV); }
-      try {
-        const rawMu = await store.get("eliga-tcg-mute");
-        setMuted(rawMu === "1");
-      } catch (e) { /* som ligado por defeito */ }
-      try {
-        const ob = await store.get("eliga-tcg-onboard-" + username);
-        if (!ob) setOnboardStep(0);
-      } catch (e) { setOnboardStep(0); }
+      // ranking — continua partilhado/local nesta fase (ver Fase 4)
       try {
         const rawR = await store.get("eliga-tcg-rank-global");
         setRank(rawR ? JSON.parse(rawR) : { jornada: 0, scores: {} });
       } catch (e) { setRank({ jornada: 0, scores: {} }); }
+
+      let profile = null;
+      try {
+        const { data, error } = await supabase.from("profiles").select("username, state").eq("id", userId).single();
+        if (!error) profile = data;
+      } catch (e) { /* sem ligação — segue com defaults/legado */ }
+
+      if (profile?.username && profile.username !== username) setUsername(profile.username);
+
+      let st = profile?.state && Object.keys(profile.state).length > 0 ? profile.state : null;
+      if (!st) st = await loadLegacyLocalState(username);
+      st = st || {};
+
+      setCollection(st.collection || {});
+
+      const m = st.meta || {};
+      const dias = m.dias || [];
+      const t = todayStr();
+      setMeta({ dias: dias.includes(t) ? dias : [...dias, t].slice(-90), packs: m.packs || {}, claims: m.claims || {}, pity: m.pity || 0, trocas: m.trocas || {}, escUso: m.escUso || {}, trivia: m.trivia || {} });
+
+      const lin = st.lineup || {};
+      setLineup(lin.ids || [null, null, null]);
+      setCaptain(lin.captain ?? null);
+
+      setHist(st.hist || []);
+      setCodesUsed(st.codesUsed || []);
+      // contas novas (sem progresso anterior) arrancam com 5 Escolhas de oferta
+      setEscolhas(st.escolhas !== undefined ? st.escolhas : 5);
+      setEscSlot(st.escSlot ?? Math.floor(Date.now() / PICK_SLOT_MS));
+      setPicksUsed(st.picksUsed || {});
+      setJHist(st.jHist || []);
+      setVitrine(st.vitrine || [null, null, null]);
+      setPrev(st.prev && st.prev.groupResult !== undefined ? st.prev : EMPTY_PREV);
+      setMuted(!!st.muted);
+      if (!st.onboardDone) setOnboardStep(0);
+
       loaded.current = true;
     })();
-  }, [username]);
+  }, [username, userId]);
 
-  // guardar coleção
+  // guardar progresso do utilizador no Supabase (profiles.state), com debounce
   useEffect(() => {
-    if (!loaded.current || !username) return;
-    (async () => {
-      await store.set("eliga-tcg-col-" + username, JSON.stringify(collection));
-      await store.set("eliga-tcg-meta-" + username, JSON.stringify(meta));
-      await store.set("eliga-tcg-lineup-" + username, JSON.stringify({ ids: lineup, captain }));
-      await store.set("eliga-tcg-rank-global", JSON.stringify(rank));
-      await store.set("eliga-tcg-hist-" + username, JSON.stringify(hist.slice(0, 50)));
-      await store.set("eliga-tcg-codes-" + username, JSON.stringify(codesUsed));
-      await store.set("eliga-tcg-escolhas-" + username, String(escolhas));
-      await store.set("eliga-tcg-picksused-" + username, JSON.stringify(picksUsed));
-      if (escSlot !== null) await store.set("eliga-tcg-esc-slot-" + username, String(escSlot));
-      await store.set("eliga-tcg-jhist-" + username, JSON.stringify(jHist.slice(0, 30)));
-      await store.set("eliga-tcg-vitrine-" + username, JSON.stringify(vitrine));
-      await store.set("eliga-tcg-prev-" + username, JSON.stringify(prev));
-    })();
-  }, [collection, meta, lineup, captain, rank, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, username]);
+    if (!loaded.current || !username || !userId) return;
+    store.set("eliga-tcg-rank-global", JSON.stringify(rank));
+    const state = {
+      collection, meta,
+      lineup: { ids: lineup, captain },
+      hist: hist.slice(0, 50),
+      codesUsed,
+      escolhas,
+      escSlot,
+      picksUsed,
+      jHist: jHist.slice(0, 30),
+      vitrine,
+      prev,
+      muted,
+      onboardDone: onboardStep === null,
+    };
+    const t = setTimeout(() => {
+      supabase.from("profiles").update({ state, updated_at: new Date().toISOString() }).eq("id", userId)
+        .then(({ error }) => { if (error) console.error("Erro ao guardar progresso:", error.message); });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [collection, meta, lineup, captain, rank, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, muted, onboardStep, username, userId]);
+
 
   const logout = async () => {
-    await store.delete("eliga-tcg-sessao");
+    await supabase.auth.signOut();
     setUsername(null); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
@@ -1410,14 +1462,8 @@ function App() {
       }
     } catch (e) { /* partilha cancelada */ }
   };
-  const finishOnboard = async () => {
-    setOnboardStep(null);
-    try { await store.set("eliga-tcg-onboard-" + username, "1"); } catch (e) { /* ok */ }
-  };
-  const toggleMute = async () => {
-    const next = !muted; setMuted(next);
-    try { await store.set("eliga-tcg-mute", next ? "1" : "0"); } catch (e) { /* ok */ }
-  };
+  const finishOnboard = () => setOnboardStep(null);
+  const toggleMute = () => setMuted((m) => !m);
   const directTradeGo = (rarity, target) => {
     if (duplicatesOf(rarity) < TRADE_DIRECT) return;
     let need = TRADE_DIRECT;
