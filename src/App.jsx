@@ -341,7 +341,7 @@ function pickDuplicates(rarity, collection, n) {
 
 /* ---------- objetivos ---------- */
 function buildObjectives(meta, collection) {
-  const today = todayStr(), wk = weekKey();
+  const today = todayStr(), wk = weekKey(new Date(today + "T12:00:00"));
   const dias = meta.dias || [];
   const packsToday = (meta.packs || {})[today] || 0;
   const packsWeek = Object.entries(meta.packs || {}).filter(([d]) => weekKey(new Date(d + "T12:00:00")) === wk).reduce((s, [, n]) => s + n, 0);
@@ -518,7 +518,10 @@ function playFx(kind, muted) {
       const len = 0.22, buf = ctx.createBuffer(1, ctx.sampleRate * len, ctx.sampleRate), d = buf.getChannelData(0);
       for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) * 0.6;
       const s = ctx.createBufferSource(); s.buffer = buf;
-      const g = ctx.createGain(); g.gain.value = 0.3; s.connect(g); g.connect(ctx.destination); s.start();
+      // filtro passa-baixo: tira o "chiado" agudo, fica mais um rasgar de papel surdo
+      const filter = ctx.createBiquadFilter(); filter.type = "lowpass"; filter.frequency.value = 1500; filter.Q.value = 0.6;
+      const g = ctx.createGain(); g.gain.value = 0.16;
+      s.connect(filter); filter.connect(g); g.connect(ctx.destination); s.start();
     }
     if (kind === "flip") tone(520, 0, 0.07, "sine", 0.1);
     if (kind === "comum") tone(440, 0, 0.14, "sine", 0.1);
@@ -1337,23 +1340,25 @@ function App() {
     return next;
   });
 
-  const openPack = (pack) => {
+  const openPack = async (pack, claim) => {
     if (pack.locked) return;
-    let cards = drawPack(pack);
-    // pity: ao 10º pack consecutivo sem Épica ou superior, este traz uma garantida
-    const hasEpicPlus = (cs) => cs.some((c) => c.rarity === "epica" || c.rarity === "lendaria");
-    if (!hasEpicPlus(cards) && (meta.pity || 0) + 1 >= 10) {
-      const rar = Math.random() < 0.12 ? "lendaria" : "epica";
-      cards[2] = randomOfRarity(rar, pack.specialBoost);
-      const ord = { comum: 0, rara: 1, epica: 2, lendaria: 3 };
-      cards = [...cards].sort((a, b) => ord[a.rarity] - ord[b.rarity]);
+    const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
+    const { data, error } = await supabase.functions.invoke("open-pack", { body: { packId: pack.id, ...(claim ? { claim } : {}) } });
+    if (error || !data || data.error) {
+      let msg = "Não foi possível abrir o pack. Tenta novamente.";
+      if (error?.context) {
+        try { const body = await error.context.json(); if (body?.error) msg = body.error; } catch (e) { /* ignora */ }
+      } else if (data?.error) {
+        msg = data.error;
+      }
+      setToast(msg); setTimeout(() => setToast(null), 2600);
+      return;
     }
-    const resetPity = hasEpicPlus(cards);
-    setOpening({ pack, cards, ownedBefore: new Set(Object.keys(collection).filter((k) => collection[k] > 0)), initialPhase: "pack", again: () => openPack(pack), againLabel: "Abrir outro" });
-    addCards(cards);
-    const t = todayStr();
-    setMeta((m) => ({ ...m, pity: resetPity ? 0 : (m.pity || 0) + 1, packs: { ...m.packs, [t]: (m.packs[t] || 0) + 1 } }));
-    setHist((h) => [{ t: Date.now(), pack: pack.name, ids: cards.map((c) => c.id) }, ...h].slice(0, 50));
+    const cards = data.cardIds.map((id) => POOL.find((c) => c.id === id)).filter(Boolean);
+    setCollection(data.collection);
+    setMeta(data.meta);
+    setHist(data.hist);
+    setOpening({ pack, cards, ownedBefore, initialPhase: "pack", again: () => openPack(pack), againLabel: "Abrir outro" });
   };
 
   // ---- trocas ----
@@ -1390,13 +1395,13 @@ function App() {
   const claimableCount = objectives.filter(isClaimable).length;
   const claimObjective = (o) => {
     if (!isClaimable(o)) return;
-    setMeta((m) => ({ ...m, claims: { ...m.claims, [o.id]: o.periodo } }));
     if (o.reward.startsWith("escolha")) {
       const n = parseInt(o.reward.slice(7)) || 1;
+      setMeta((m) => ({ ...m, claims: { ...m.claims, [o.id]: o.periodo } }));
       setEscolhas((e) => e + n);
       setToast(`+${n} Escolha${n > 1 ? "s" : ""}! 🎯 Usa-as no separador Escolhas.`); setTimeout(() => setToast(null), 2800);
     } else {
-      openPack(PACKS.find((p) => p.id === o.reward) || PACKS[0]);
+      openPack(PACKS.find((p) => p.id === o.reward) || PACKS[0], { id: o.id, periodo: o.periodo });
     }
   };
 

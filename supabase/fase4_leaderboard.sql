@@ -54,6 +54,7 @@ returns table(username text, score int, jornadas int)
 language plpgsql
 security definer set search_path = public
 as $$
+#variable_conflict use_column
 declare
   uname text;
   bot record;
@@ -79,11 +80,11 @@ begin
   -- para o ranking continuar vivo sem crescer demasiado depressa
   for bot in select l.username from public.leaderboard l where l.user_id is null loop
     if random() < 0.35 then
-      update public.leaderboard
-        set score = score + (60 + floor(random() * 131))::int,
-            jornadas = jornadas + 1,
+      update public.leaderboard as lb
+        set score = lb.score + (60 + floor(random() * 131))::int,
+            jornadas = lb.jornadas + 1,
             updated_at = now()
-        where username = bot.username;
+        where lb.username = bot.username;
     end if;
   end loop;
 
