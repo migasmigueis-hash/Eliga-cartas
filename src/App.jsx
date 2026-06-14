@@ -1182,6 +1182,7 @@ const TRADE_COST = 10;
 function App() {
   const [username, setUsername] = useState(null);
   const [userId, setUserId] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [tab, setTab] = useState("loja");
   const [collection, setCollection] = useState({});
@@ -1255,10 +1256,11 @@ function App() {
 
       let profile = null;
       try {
-        const { data, error } = await supabase.from("profiles").select("username, state").eq("id", userId).single();
+        const { data, error } = await supabase.from("profiles").select("username, state, is_admin").eq("id", userId).single();
         if (!error) profile = data;
       } catch (e) { /* sem ligação — segue com defaults/legado */ }
 
+      setIsAdmin(!!profile?.is_admin);
       if (profile?.username && profile.username !== username) setUsername(profile.username);
 
       let st = profile?.state && Object.keys(profile.state).length > 0 ? profile.state : null;
@@ -1320,7 +1322,7 @@ function App() {
 
   const logout = async () => {
     await supabase.auth.signOut();
-    setUsername(null); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
+    setUsername(null); setIsAdmin(false); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
   const addCards = (cards) => setCollection((prev) => {
@@ -1768,7 +1770,7 @@ function App() {
                 </div>
               </div>
             ))}
-            {username === "admin" && (
+            {isAdmin && (
               <div style={{ borderRadius: 16, overflow: "hidden", background: "#0E162E", border: "1px dashed #ff7b8a88", display: "flex", flexDirection: "column" }}>
                 <div style={{ height: 170, background: "repeating-linear-gradient(45deg,#1a1030 0 16px,#241638 16px 32px)", position: "relative" }}>
                   <div style={{ position: "absolute", top: 12, right: 12, background: "#ff7b8a", color: "#2a060c", borderRadius: 99, padding: "4px 12px", fontSize: 11, fontFamily: FONT, fontWeight: 700, letterSpacing: 1 }}>ADMIN</div>
@@ -2049,7 +2051,7 @@ function App() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: "#39E6FF", background: "#39E6FF18", border: "1px solid #39E6FF55", borderRadius: 99, padding: "8px 18px" }}>🎯 {escolhas}</span>
-              {username === "admin" && (
+              {isAdmin && (
                 <button onClick={adminRefreshBoard} style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1, padding: "8px 14px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Regenerar (admin)</button>
               )}
             </div>
@@ -2097,7 +2099,7 @@ function App() {
                   Como numa etapa real: sorteia os grupos, prevê os 8 apurados, vê os resultados da fase de grupos, e depois prevê as eliminatórias jogo a jogo. Apurado certo +10 · quarto-de-final certo +10 · meia-final certa +15 · campeão +50. Com 80+ pts ganhas um Pack Base; com 130+ um Pack Finals.
                 </p>
               </div>
-              {username === "admin" && (
+              {isAdmin && (
                 <button onClick={clearPrev} style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1, padding: "8px 14px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>Limpar (admin)</button>
               )}
             </div>
