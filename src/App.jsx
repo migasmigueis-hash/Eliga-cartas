@@ -1580,6 +1580,32 @@ function App() {
   };
   const clearPrev = () => setPrev(EMPTY_PREV);
 
+  // admin: reinicia o ranking partilhado e o histórico "As tuas jornadas" de TODOS os jogadores
+  const adminResetRanking = async () => {
+    setJHist([]);
+    try {
+      const { error } = await supabase.rpc("admin_reset_competicao");
+      if (error) {
+        console.error("admin_reset_competicao falhou:", error.message, error);
+        setToast("Não foi possível reiniciar a competição (ver consola).");
+      } else {
+        const { data: lb, error: e2 } = await supabase.from("leaderboard").select("username, score").order("score", { ascending: false });
+        if (!e2 && lb) {
+          const scores = {};
+          lb.forEach((r) => { scores[r.username] = r.score; });
+          setRank({ scores });
+        } else {
+          setRank({ scores: {} });
+        }
+        setToast("Jornadas (de todos) e ranking reiniciados.");
+      }
+    } catch (e) {
+      console.error("admin_reset_competicao — erro de ligação:", e);
+      setToast("Não foi possível reiniciar a competição (ver consola).");
+    }
+    setTimeout(() => setToast(null), 2600);
+  };
+
   const redeemCode = () => {
     const c = codeInput.trim().toUpperCase();
     if (!c) return;
@@ -2001,9 +2027,14 @@ function App() {
 
           {/* ranking */}
           <div style={{ marginTop: 44 }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14 }}>
-              <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, margin: 0, color: "#fff" }}>Ranking</h2>
-              <span style={{ fontSize: 11, letterSpacing: 1, color: "#6f87a8", fontFamily: FONT }}>JÁ JOGASTE {jHist.length} JORNADA{jHist.length === 1 ? "" : "S"}</span>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14, flexWrap: "wrap", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, margin: 0, color: "#fff" }}>Ranking</h2>
+                <span style={{ fontSize: 11, letterSpacing: 1, color: "#6f87a8", fontFamily: FONT }}>JÁ JOGASTE {jHist.length} JORNADA{jHist.length === 1 ? "" : "S"}</span>
+              </div>
+              {isAdmin && (
+                <button onClick={adminResetRanking} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Limpar jornadas (todos) e ranking (admin)</button>
+              )}
             </div>
             {Object.keys(rank.scores).length === 0 ? (
               <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "24px 20px", textAlign: "center", color: "#6f87a8", fontSize: 13 }}>
