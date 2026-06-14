@@ -273,3 +273,72 @@ Confirma em produção com as duas contas.
   previsões) — requer instalar a Supabase CLI.
 - **Fase 4**: ranking real (tabela partilhada), painel admin a sério, Twitch OAuth.
 
+---
+
+# FASE 4 — Ranking real e partilhado
+
+## O que mudou
+
+- Antes, o ranking (`rank-global`) vivia em `localStorage` — cada browser tinha o seu
+  próprio ranking "fake", com bots que só cresciam quando *aquele* dispositivo
+  simulava jornadas.
+- Agora existe uma tabela `leaderboard` no Supabase, **visível por todos os
+  jogadores** (leitura aberta), com uma linha por jogador real + 10 "bots" de
+  preenchimento.
+- Quando simulas uma jornada (Competição → "Simular jornada"), a app chama uma
+  função no servidor (`register_jornada`) que:
+  - soma os pontos dessa jornada ao teu total no ranking partilhado;
+  - faz alguns "bots" avançarem também (aleatoriamente), para o ranking não ficar
+    parado;
+  - devolve o ranking atualizado, que aparece imediatamente na app.
+- O número de "jornadas disputadas" mostrado (no botão "Simular jornada N", no
+  separador Competição e no Perfil) passa a ser **o teu número de jornadas**
+  (já guardado em `jHist`, da Fase 2) — deixa de ser um contador global por
+  dispositivo.
+- Esta lógica corre num bloco protegido no Postgres (`security definer`); os
+  jogadores não conseguem escrever diretamente na tabela `leaderboard` a partir do
+  browser, só através desta função.
+
+⚠️ Nota: os "bots" agora evoluem sempre que **qualquer jogador** simula uma jornada
+(com 35% de probabilidade cada). Com muitos jogadores ativos isto pode fazer os bots
+subirem mais rápido do que antes — é só "ambiente", podes ajustar/remover os bots
+mais tarde se o ranking tiver jogadores reais suficientes (basta apagar as linhas
+correspondentes em `leaderboard` no Table Editor).
+
+## Como aplicar
+
+### 1. Correr o SQL no Supabase
+- Dashboard do Supabase → **SQL Editor** → **New query**.
+- Copia e cola **todo** o conteúdo do ficheiro `supabase/fase4_leaderboard.sql`
+  (incluído neste pacote) e clica **Run**.
+- Isto cria a tabela `leaderboard`, ativa RLS (leitura aberta), semeia os 10 bots, e
+  cria a função `register_jornada`.
+
+### 2. Copiar o `src/App.jsx` atualizado
+Substitui o `src/App.jsx` pelo deste pacote.
+
+### 3. Testar localmente
+```
+npm run dev
+```
+- Vai a **Competição**, escolhe 3 cartas + capitão, e simula uma jornada.
+- Confirma que o ranking aparece com o teu nome e pontuação, ao lado dos bots.
+- No Supabase → **Table Editor → leaderboard**, confirma que a tua linha (`user_id`
+  preenchido) e algumas linhas de bots têm `score`/`jornadas` atualizados.
+- (Opcional) Entra com outra conta e confirma que vê o mesmo ranking, incluindo a
+  pontuação da primeira conta.
+
+### 4. Commit e push
+```
+git add -A
+git commit -m "Fase 4: ranking real e partilhado (leaderboard)"
+git push
+```
+Confirma em produção.
+
+## Próximas fases
+
+- **Fase 3b**: Edge Functions para anti-cheat nas restantes ações que dão recompensas
+  (abrir pack, trocar, resgatar código, objetivos, previsões).
+- **Fase 5**: painel admin a sério, Twitch OAuth, etapas/competições reais por época.
+

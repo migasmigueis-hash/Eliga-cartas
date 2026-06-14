@@ -494,7 +494,8 @@ function scoreLineup(cards, captainIdx) {
   return { rows, total };
 }
 
-const BOTS = ["dragao_99", "verde_e_branco", "aguia_voadora", "ilha_esports", "minhoto_10", "tricolor_w7m", "arsenalista", "gamer_do_norte", "casapiano", "alverca_goat"];
+// nomes dos "bots" de preenchimento do ranking — semeados em
+// supabase/fase4_leaderboard.sql, evoluem no servidor (ver register_jornada)
 
 /* ---------- som (sintetizado, sem ficheiros) e háptica ---------- */
 let _audioCtx = null;
@@ -1192,7 +1193,7 @@ function App() {
   const [captain, setCaptain] = useState(null);
   const [pickSlot, setPickSlot] = useState(null);
   const [compResult, setCompResult] = useState(null);
-  const [rank, setRank] = useState({ jornada: 0, scores: {} });
+  const [rank, setRank] = useState({ scores: {} });
   const [hist, setHist] = useState([]);
   const [muted, setMuted] = useState(false);
   const [showOdds, setShowOdds] = useState(false);
@@ -1248,11 +1249,17 @@ function App() {
     if (!username || !userId) return;
     loaded.current = false;
     (async () => {
-      // ranking — continua partilhado/local nesta fase (ver Fase 4)
+      // ranking — partilhado, vem do Supabase (Fase 4)
       try {
-        const rawR = await store.get("eliga-tcg-rank-global");
-        setRank(rawR ? JSON.parse(rawR) : { jornada: 0, scores: {} });
-      } catch (e) { setRank({ jornada: 0, scores: {} }); }
+        const { data: lb, error } = await supabase.from("leaderboard").select("username, score").order("score", { ascending: false });
+        if (!error && lb) {
+          const scores = {};
+          lb.forEach((r) => { scores[r.username] = r.score; });
+          setRank({ scores });
+        } else {
+          setRank({ scores: {} });
+        }
+      } catch (e) { setRank({ scores: {} }); }
 
       let profile = null;
       try {
@@ -1297,7 +1304,6 @@ function App() {
   // guardar progresso do utilizador no Supabase (profiles.state), com debounce
   useEffect(() => {
     if (!loaded.current || !username || !userId) return;
-    store.set("eliga-tcg-rank-global", JSON.stringify(rank));
     const state = {
       collection, meta,
       lineup: { ids: lineup, captain },
@@ -1317,7 +1323,7 @@ function App() {
         .then(({ error }) => { if (error) console.error("Erro ao guardar progresso:", error.message); });
     }, 600);
     return () => clearTimeout(t);
-  }, [collection, meta, lineup, captain, rank, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, muted, onboardStep, username, userId]);
+  }, [collection, meta, lineup, captain, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, muted, onboardStep, username, userId]);
 
 
   const logout = async () => {
@@ -1397,22 +1403,30 @@ function App() {
   // ---- competição fantasy ----
   const lineupCards = lineup.map((id) => (id ? POOL.find((c) => c.id === id) : null));
   const lineupFull = lineupCards.every(Boolean);
-  const simulateJornada = () => {
+  const simulateJornada = async () => {
     if (!lineupFull || captain === null) return;
     const res = scoreLineup(lineupCards, captain);
-    setRank((r) => {
-      const scores = { ...r.scores };
-      BOTS.forEach((b) => { scores[b] = (scores[b] || 0) + 60 + Math.round(Math.random() * 130); });
-      scores[username] = (scores[username] || 0) + res.total;
-      return { jornada: r.jornada + 1, scores };
-    });
-    setCompResult(res);
+    const jornadaNum = jHist.length + 1;
+    setCompResult({ ...res, j: jornadaNum });
     setJHist((h) => [{
-      j: rank.jornada + 1, t: Date.now(), total: res.total,
+      j: jornadaNum, t: Date.now(), total: res.total,
       cards: lineupCards.map((c) => c.name),
       cap: lineupCards[captain]?.name || "", capRarity: lineupCards[captain]?.rarity || null,
       hasCaster: lineupCards.some((c) => c.isCaster),
     }, ...h].slice(0, 30));
+
+    try {
+      const { data, error } = await supabase.rpc("register_jornada", { p_points: res.total });
+      if (error) {
+        console.error("register_jornada falhou:", error.message, error);
+      } else if (data) {
+        const scores = {};
+        data.forEach((r) => { scores[r.username] = r.score; });
+        setRank({ scores });
+        return;
+      }
+    } catch (e) { console.error("register_jornada — erro de ligação:", e); }
+    setRank((r) => ({ scores: { ...r.scores, [username]: (r.scores[username] || 0) + res.total } }));
   };
   const pickCard = (card) => {
     if (pickSlot === null) return;
@@ -1981,7 +1995,7 @@ function App() {
 
           <div style={{ display: "flex", justifyContent: "center", marginTop: 26 }}>
             <button onClick={simulateJornada} disabled={!lineupFull || captain === null} style={{ ...btn(lineupFull && captain !== null), opacity: lineupFull && captain !== null ? 1 : 0.35, cursor: lineupFull && captain !== null ? "pointer" : "not-allowed", fontSize: 14, padding: "14px 30px" }}>
-              {!lineupFull ? "Escolhe 3 cartas para jogar" : captain === null ? "Escolhe um capitão (×2) primeiro" : `Simular jornada ${rank.jornada + 1}`}
+              {!lineupFull ? "Escolhe 3 cartas para jogar" : captain === null ? "Escolhe um capitão (×2) primeiro" : `Simular jornada ${jHist.length + 1}`}
             </button>
           </div>
 
@@ -1989,7 +2003,7 @@ function App() {
           <div style={{ marginTop: 44 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14 }}>
               <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, margin: 0, color: "#fff" }}>Ranking</h2>
-              <span style={{ fontSize: 11, letterSpacing: 1, color: "#6f87a8", fontFamily: FONT }}>{rank.jornada} JORNADA{rank.jornada === 1 ? "" : "S"} DISPUTADA{rank.jornada === 1 ? "" : "S"}</span>
+              <span style={{ fontSize: 11, letterSpacing: 1, color: "#6f87a8", fontFamily: FONT }}>JÁ JOGASTE {jHist.length} JORNADA{jHist.length === 1 ? "" : "S"}</span>
             </div>
             {Object.keys(rank.scores).length === 0 ? (
               <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "24px 20px", textAlign: "center", color: "#6f87a8", fontSize: 13 }}>
@@ -2347,7 +2361,7 @@ function App() {
 
             {/* estatísticas */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginTop: 22 }}>
-              {[["Packs abertos", totalPacks], ["Trocas feitas", totalTrocas], ["Escolhas usadas", totalEsc], ["Lendárias", `${lend}`], ["Dias seguidos", streak], ["Jornadas jogadas", rank.jornada], ["Melhor jornada", best > 0 ? `${best} pts` : "—"], ["Posição no ranking", pos >= 0 ? `${pos + 1}º` : "—"]].map(([k, v]) => (
+              {[["Packs abertos", totalPacks], ["Trocas feitas", totalTrocas], ["Escolhas usadas", totalEsc], ["Lendárias", `${lend}`], ["Dias seguidos", streak], ["Jornadas jogadas", jHist.length], ["Melhor jornada", best > 0 ? `${best} pts` : "—"], ["Posição no ranking", pos >= 0 ? `${pos + 1}º` : "—"]].map(([k, v]) => (
                 <div key={k} style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "14px 16px" }}>
                   <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 22, color: "#fff" }}>{v}</div>
                   <div style={{ fontSize: 11, letterSpacing: 1, color: "#6f87a8", marginTop: 4, fontFamily: FONT }}>{k.toUpperCase()}</div>
@@ -2505,7 +2519,7 @@ function App() {
       {compResult && (
         <div style={{ position: "fixed", inset: 0, zIndex: 56, background: "rgba(3,6,12,0.93)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setCompResult(null)}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: 620, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", background: "#0E162E", border: "1px solid #1BF5A344", borderRadius: 18, padding: 24, animation: "pop 320ms ease-out" }}>
-            <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff", textAlign: "center" }}>Resultado da jornada {rank.jornada}</div>
+            <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff", textAlign: "center" }}>Resultado da jornada {compResult.j}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, margin: "20px 0" }}>
               {compResult.rows.map((r, i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, background: "#0A1126", borderRadius: 12, padding: "12px 14px" }}>
