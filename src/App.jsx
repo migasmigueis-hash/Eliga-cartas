@@ -284,31 +284,11 @@ const PACKS = [
 ];
 
 // Probabilidades por carta — publicadas na Loja
+// (o sorteio real acontece no servidor — ver supabase/functions/_shared/gameData.ts)
 const PACK_ODDS = {
   0: [["comum", 76], ["rara", 20], ["epica", 3], ["lendaria", 1]],
   1: [["comum", 52], ["rara", 35], ["epica", 10], ["lendaria", 3]],
 };
-function rollRarity(boost) {
-  let r = Math.random() * 100;
-  for (const [k, w] of PACK_ODDS[boost ? 1 : 0]) { if ((r -= w) <= 0) return k; }
-  return "comum";
-}
-function randomOfRarity(rarity, preferSpecial) {
-  let candidates = POOL.filter((c) => c.rarity === rarity);
-  if (preferSpecial && (rarity === "epica" || rarity === "lendaria")) {
-    const specials = candidates.filter((c) => c.edition);
-    if (specials.length && Math.random() < 0.65) candidates = specials;
-  } else if (!preferSpecial) {
-    const nonSpecial = candidates.filter((c) => !c.edition);
-    if (nonSpecial.length && Math.random() < 0.8) candidates = nonSpecial;
-  }
-  return candidates[Math.floor(Math.random() * candidates.length)];
-}
-function drawPack(pack) {
-  const cards = [0, 1, 2].map(() => randomOfRarity(rollRarity(pack.specialBoost), pack.specialBoost));
-  const order = { comum: 0, rara: 1, epica: 2, lendaria: 3 };
-  return cards.sort((a, b) => order[a.rarity] - order[b.rarity]);
-}
 
 /* ---------- datas (objetivos diários/semanais) ---------- */
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -531,6 +511,16 @@ function playFx(kind, muted) {
   } catch (e) { /* sem áudio disponível */ }
 }
 function buzz(pattern) { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) { /* sem háptica */ } }
+
+// extrai uma mensagem de erro amigável da resposta de supabase.functions.invoke
+async function fnErrorMessage(error, data, fallback = "Não foi possível completar a ação. Tenta novamente.") {
+  if (error?.context) {
+    try { const body = await error.context.json(); if (body?.error) return body.error; } catch (e) { /* ignora */ }
+  }
+  if (data?.error) return data.error;
+  if (error) return fallback;
+  return fallback;
+}
 
 /* ---------- showcase: desenhar a carta num canvas e exportar PNG ---------- */
 function _roundRect(ctx, x, y, w, h, r) {
@@ -1345,12 +1335,7 @@ function App() {
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
     const { data, error } = await supabase.functions.invoke("open-pack", { body: { packId: pack.id, ...(claim ? { claim } : {}) } });
     if (error || !data || data.error) {
-      let msg = "Não foi possível abrir o pack. Tenta novamente.";
-      if (error?.context) {
-        try { const body = await error.context.json(); if (body?.error) msg = body.error; } catch (e) { /* ignora */ }
-      } else if (data?.error) {
-        msg = data.error;
-      }
+      const msg = await fnErrorMessage(error, data, "Não foi possível abrir o pack. Tenta novamente.");
       setToast(msg); setTimeout(() => setToast(null), 2600);
       return;
     }
@@ -1367,24 +1352,25 @@ function App() {
     if (duplicatesOf(rarity) < TRADE_COST) return;
     setTradePreview({ rarity, picks: pickDuplicates(rarity, collection, TRADE_COST) });
   };
-  const confirmTrade = () => {
+  const confirmTrade = async () => {
     if (!tradePreview) return;
-    const { rarity, picks } = tradePreview;
-    const reward = randomOfRarity(RARITY_UP[rarity], Math.random() < 0.5);
-    setCollection((prev) => {
-      const next = { ...prev };
-      Object.entries(picks).forEach(([id, n]) => { next[id] = Math.max(1, (next[id] || 0) - n); });
-      next[reward.id] = (next[reward.id] || 0) + 1;
-      return next;
-    });
+    const { rarity } = tradePreview;
     setTradePreview(null);
-    const td = todayStr();
-    setMeta((m) => ({ ...m, trocas: { ...(m.trocas || {}), [td]: ((m.trocas || {})[td] || 0) + 1 } }));
-    setHist((h) => [{ t: Date.now(), pack: "Troca (" + RARITY[rarity].label + " → " + RARITY[RARITY_UP[rarity]].label + ")", ids: [reward.id] }, ...h].slice(0, 50));
+    const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
+    const { data, error } = await supabase.functions.invoke("trade-cards", { body: { mode: "rand", rarity } });
+    if (error || !data || data.error) {
+      const msg = await fnErrorMessage(error, data, "Não foi possível fazer a troca. Tenta novamente.");
+      setToast(msg); setTimeout(() => setToast(null), 2600);
+      return;
+    }
+    const reward = POOL.find((c) => c.id === data.cardId);
+    setCollection(data.collection);
+    setMeta(data.meta);
+    setHist(data.hist);
     setOpening({
       pack: { name: "Troca", sub: "1 carta " + RARITY[RARITY_UP[rarity]].label, gradient: "linear-gradient(165deg,#0E2A4A,#1BF5A3)", accent: "#1BF5A3" },
       cards: [reward],
-      ownedBefore: new Set(Object.keys(collection).filter((k) => collection[k] > 0)),
+      ownedBefore,
       initialPhase: "reveal", again: null,
     });
   };
@@ -1485,26 +1471,23 @@ function App() {
   };
   const finishOnboard = () => setOnboardStep(null);
   const toggleMute = () => setMuted((m) => !m);
-  const directTradeGo = (rarity, target) => {
-    if (duplicatesOf(rarity) < TRADE_DIRECT) return;
-    let need = TRADE_DIRECT;
-    const next = { ...collection };
-    for (const c of POOL.filter((x) => x.rarity === rarity)) {
-      if (need <= 0) break;
-      const spare = (next[c.id] || 0) - 1;
-      if (spare > 0) { const take = Math.min(spare, need); next[c.id] -= take; need -= take; }
-    }
-    if (need > 0) return;
-    next[target.id] = (next[target.id] || 0) + 1;
-    setCollection(next);
-    const td = todayStr();
-    setMeta((m) => ({ ...m, trocas: { ...(m.trocas || {}), [td]: ((m.trocas || {})[td] || 0) + 1 } }));
-    setHist((h) => [{ t: Date.now(), pack: `Troca à escolha (${TRADE_DIRECT}× ${RARITY[rarity].label})`, ids: [target.id] }, ...h].slice(0, 50));
+  const directTradeGo = async (rarity, target) => {
     setDirectTrade(null);
+    const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
+    const { data, error } = await supabase.functions.invoke("trade-cards", { body: { mode: "direct", rarity, targetId: target.id } });
+    if (error || !data || data.error) {
+      const msg = await fnErrorMessage(error, data, "Não foi possível fazer a troca. Tenta novamente.");
+      setToast(msg); setTimeout(() => setToast(null), 2600);
+      return;
+    }
+    const card = POOL.find((c) => c.id === data.cardId) || target;
+    setCollection(data.collection);
+    setMeta(data.meta);
+    setHist(data.hist);
     setOpening({
-      pack: { name: "Troca à escolha", sub: target.name, gradient: "linear-gradient(165deg,#0E2A4A,#39E6FF)", accent: "#39E6FF" },
-      cards: [target],
-      ownedBefore: new Set(Object.keys(collection).filter((k) => collection[k] > 0)),
+      pack: { name: "Troca à escolha", sub: card.name, gradient: "linear-gradient(165deg,#0E2A4A,#39E6FF)", accent: "#39E6FF" },
+      cards: [card],
+      ownedBefore,
       initialPhase: "reveal",
     });
   };

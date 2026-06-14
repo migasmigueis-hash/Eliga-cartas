@@ -6,7 +6,43 @@
 
 import { CARD_POOL, type CardRef, type Rarity } from "./cardpool.ts";
 
+export { CARD_POOL };
+export type { CardRef, Rarity };
+
+
 export const RARITY_ORDER: Record<Rarity, number> = { comum: 0, rara: 1, epica: 2, lendaria: 3 };
+
+// mantém em sincronia com RARITY_UP / RARITY (label) em src/App.jsx
+export const RARITY_UP: Record<string, Rarity> = { comum: "rara", rara: "epica", epica: "lendaria" };
+export const RARITY_LABEL: Record<Rarity, string> = { comum: "Comum", rara: "Rara", epica: "Épica", lendaria: "Lendária" };
+
+export const TRADE_COST = 10; // duplicados -> 1 carta aleatória da raridade acima
+export const TRADE_DIRECT = 25; // duplicados -> escolher a carta exata da raridade acima
+
+// nº de duplicados (cópias além da 1ª) de uma raridade
+export function duplicatesOf(rarity: Rarity, collection: Record<string, number>): number {
+  return CARD_POOL.filter((c) => c.rarity === rarity).reduce((s, c) => s + Math.max(0, (collection[c.id] || 0) - 1), 0);
+}
+
+// escolhe quais duplicados consumir (mesma lógica que existia no cliente):
+// vai sempre à carta com mais cópias primeiro
+export function pickDuplicates(rarity: Rarity, collection: Record<string, number>, n: number): Record<string, number> {
+  const picks: Record<string, number> = {};
+  const temp = { ...collection };
+  let remaining = n;
+  while (remaining > 0) {
+    const candidates = CARD_POOL
+      .filter((c) => c.rarity === rarity && (temp[c.id] || 0) > 1)
+      .sort((a, b) => (temp[b.id] || 0) - (temp[a.id] || 0));
+    if (!candidates.length) break;
+    const id = candidates[0].id;
+    temp[id]--;
+    picks[id] = (picks[id] || 0) + 1;
+    remaining--;
+  }
+  return picks;
+}
+
 
 export interface PackDef {
   id: string;
