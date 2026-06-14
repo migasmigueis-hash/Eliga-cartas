@@ -1,0 +1,23 @@
+{
+  "name": "eLiga Portugal — Cartas",
+  "short_name": "eLiga Cartas",
+  "description": "Coleciona as cartas oficiais da eLiga Portugal, troca, compete e sobe no ranking.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#060A16",
+  "theme_color": "#060A16",
+  "icons": [
+    {
+      "src": "https://esports.ligaportugal.pt/images/logo@2x.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://esports.ligaportugal.pt/images/logo@2x.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
