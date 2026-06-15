@@ -9,7 +9,10 @@
 //
 // Toda a abertura de pack (incluindo admin) tem de ter pelo menos um destes
 // marcadores — não há "aberturas grátis":
-//   - claim:      { id, periodo } — recompensa de objetivo (3b.3)
+//   - claim:      { id, periodo } — recompensa de objetivo, validada no
+//                  servidor (prog >= alvo, período certo, ainda não
+//                  reclamado, e que este pack é mesmo a recompensa desse
+//                  objetivo) — ver _shared/objectives.ts
 //   - prevReward: true            — recompensa das Previsões
 //   - trivia:     { day, pick, ok } — recompensa da Pergunta do dia (uma vez por dia)
 //   - spendTwitchPoints: true     — debita pack.twitchCost de twitch_points (Fase 5.3)
@@ -20,6 +23,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
 import { PACKS, applyPackOpening, todayStr } from "../_shared/gameData.ts";
+import { validateObjectiveClaim } from "../_shared/objectives.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
@@ -68,6 +72,19 @@ Deno.serve(async (req: Request) => {
 
   const state = (profile.state ?? {}) as Record<string, unknown>;
   const prevMeta = (state.meta as Record<string, unknown>) ?? {};
+  const collectionBefore = (state.collection as Record<string, number>) ?? {};
+
+  // valida a recompensa de objetivo (se aplicável): recalcula prog/alvo no
+  // servidor e confirma que este "pack" é mesmo a recompensa desse objetivo
+  let claimPatch: { id: string; periodo: string } | null = null;
+  if (body.claim) {
+    const result = validateObjectiveClaim(body.claim.id, body.claim.periodo, prevMeta, collectionBefore);
+    if (result.ok === false) return jsonResponse({ error: result.error }, 400);
+    if (result.reward !== pack.id) {
+      return jsonResponse({ error: "Este objetivo dá um pack diferente." }, 400);
+    }
+    claimPatch = { id: body.claim.id as string, periodo: body.claim.periodo as string };
+  }
 
   // valida a recompensa da Trivia (no máximo uma vez por dia, e só para "hoje")
   let triviaPatch: { day: string; pick: number; ok: boolean } | null = null;
@@ -96,19 +113,18 @@ Deno.serve(async (req: Request) => {
     spentPoints = true;
   }
 
-  const earned = !!body.claim || !!body.prevReward || !!triviaPatch || spentPoints;
+  const earned = !!claimPatch || !!body.prevReward || !!triviaPatch || spentPoints;
   if (!earned) {
     return jsonResponse({ error: "As aberturas grátis estão temporariamente desativadas. Liga a tua conta Twitch para trocar pontos por packs." }, 403);
   }
 
   const { collection, meta, hist, cardIds } = applyPackOpening(state, pack);
 
-  // marca o objetivo como reclamado (se aplicável), na mesma escrita
+  // marca o objetivo como reclamado (já validado acima), na mesma escrita
   // — evita a corrida entre o "claim" local e este pedido
-  const claim = body.claim;
-  if (claim && typeof claim.id === "string" && typeof claim.periodo === "string" && claim.id.length <= 40 && claim.periodo.length <= 20) {
+  if (claimPatch) {
     const claims = { ...((prevMeta.claims as Record<string, string>) ?? {}) };
-    claims[claim.id] = claim.periodo;
+    claims[claimPatch.id] = claimPatch.periodo;
     meta.claims = claims;
   }
 
