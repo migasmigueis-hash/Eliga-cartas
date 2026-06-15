@@ -454,13 +454,30 @@ function playFx(kind, muted) {
 function buzz(pattern) { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) { /* sem háptica */ } }
 
 // extrai uma mensagem de erro amigável da resposta de supabase.functions.invoke
-async function fnErrorMessage(error, data, fallback = "Não foi possível completar a ação. Tenta novamente.") {
+// (devolve null se não houver erro)
+async function resolveFnError(error, data, fallback) {
   if (error?.context) {
     try { const body = await error.context.json(); if (body?.error) return body.error; } catch (e) { /* ignora */ }
   }
   if (data?.error) return data.error;
   if (error) return fallback;
-  return fallback;
+  return null;
+}
+
+// chama uma Edge Function; se a sessão tiver expirado ("Não autenticado."),
+// renova-a e repete uma vez antes de desistir — evita ter de voltar a fazer
+// login manualmente após sessões de teste longas.
+async function invokeFn(name, body, fallback = "Não foi possível completar a ação. Tenta novamente.") {
+  let res = await supabase.functions.invoke(name, { body });
+  let message = await resolveFnError(res.error, res.data, fallback);
+  if (message === "Não autenticado.") {
+    const { error: refreshErr } = await supabase.auth.refreshSession();
+    if (!refreshErr) {
+      res = await supabase.functions.invoke(name, { body });
+      message = await resolveFnError(res.error, res.data, fallback);
+    }
+  }
+  return { data: res.data, error: res.error, message };
 }
 
 /* ---------- showcase: desenhar a carta num canvas e exportar PNG ---------- */
@@ -1280,10 +1297,9 @@ function App() {
 
 
   const linkTwitch = async () => {
-    const { data, error } = await supabase.functions.invoke("twitch-link-start", { body: {} });
-    if (error || !data || data.error) {
-      const msg = await fnErrorMessage(error, data, "Não foi possível iniciar a ligação à Twitch. Tenta novamente.");
-      setToast(msg); setTimeout(() => setToast(null), 2800);
+    const { data, message } = await invokeFn("twitch-link-start", {}, "Não foi possível iniciar a ligação à Twitch. Tenta novamente.");
+    if (message) {
+      setToast(message); setTimeout(() => setToast(null), 2800);
       return;
     }
     window.location.href = data.url;
@@ -1303,10 +1319,9 @@ function App() {
   const openPack = async (pack, claim, extra) => {
     if (pack.locked) return;
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
-    const { data, error } = await supabase.functions.invoke("open-pack", { body: { packId: pack.id, ...(claim ? { claim } : {}), ...(extra || {}) } });
-    if (error || !data || data.error) {
-      const msg = await fnErrorMessage(error, data, "Não foi possível abrir o pack. Tenta novamente.");
-      setToast(msg); setTimeout(() => setToast(null), 2600);
+    const { data, message } = await invokeFn("open-pack", { packId: pack.id, ...(claim ? { claim } : {}), ...(extra || {}) }, "Não foi possível abrir o pack. Tenta novamente.");
+    if (message) {
+      setToast(message); setTimeout(() => setToast(null), 2600);
       return;
     }
     const cards = data.cardIds.map((id) => POOL.find((c) => c.id === id)).filter(Boolean);
@@ -1328,10 +1343,9 @@ function App() {
     const { rarity } = tradePreview;
     setTradePreview(null);
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
-    const { data, error } = await supabase.functions.invoke("trade-cards", { body: { mode: "rand", rarity } });
-    if (error || !data || data.error) {
-      const msg = await fnErrorMessage(error, data, "Não foi possível fazer a troca. Tenta novamente.");
-      setToast(msg); setTimeout(() => setToast(null), 2600);
+    const { data, message } = await invokeFn("trade-cards", { mode: "rand", rarity }, "Não foi possível fazer a troca. Tenta novamente.");
+    if (message) {
+      setToast(message); setTimeout(() => setToast(null), 2600);
       return;
     }
     const reward = POOL.find((c) => c.id === data.cardId);
@@ -1354,10 +1368,9 @@ function App() {
     if (!isClaimable(o)) return;
     if (o.reward.startsWith("escolha")) {
       const n = parseInt(o.reward.slice(7)) || 1;
-      const { data, error } = await supabase.functions.invoke("claim-objective", { body: { id: o.id, periodo: o.periodo } });
-      if (error || !data || data.error) {
-        const msg = await fnErrorMessage(error, data, "Não foi possível reclamar o objetivo. Tenta novamente.");
-        setToast(msg); setTimeout(() => setToast(null), 2600);
+      const { data, message } = await invokeFn("claim-objective", { id: o.id, periodo: o.periodo }, "Não foi possível reclamar o objetivo. Tenta novamente.");
+      if (message) {
+        setToast(message); setTimeout(() => setToast(null), 2600);
         return;
       }
       setMeta(data.meta);
@@ -1378,11 +1391,9 @@ function App() {
       setToast(`Limite de ${JORNADA_LIMIT} jornadas simuladas atingido (fase de testes).`); setTimeout(() => setToast(null), 2800);
       return;
     }
-    const { data, error } = await supabase.functions.invoke("play-jornada", { body: { lineup, captain } });
-    if (error || !data || data.error) {
-      let msg = await fnErrorMessage(error, data, "Não foi possível registar a jornada. Tenta novamente.");
-      msg = msg.replace(/^LIMITE_JORNADAS:\s*/, "");
-      setToast(msg); setTimeout(() => setToast(null), 2800);
+    const { data, message } = await invokeFn("play-jornada", { lineup, captain }, "Não foi possível registar a jornada. Tenta novamente.");
+    if (message) {
+      setToast(message.replace(/^LIMITE_JORNADAS:\s*/, "")); setTimeout(() => setToast(null), 2800);
       return;
     }
     const rows = data.rows.map((r) => ({
@@ -1453,10 +1464,9 @@ function App() {
   const directTradeGo = async (rarity, target) => {
     setDirectTrade(null);
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
-    const { data, error } = await supabase.functions.invoke("trade-cards", { body: { mode: "direct", rarity, targetId: target.id } });
-    if (error || !data || data.error) {
-      const msg = await fnErrorMessage(error, data, "Não foi possível fazer a troca. Tenta novamente.");
-      setToast(msg); setTimeout(() => setToast(null), 2600);
+    const { data, message } = await invokeFn("trade-cards", { mode: "direct", rarity, targetId: target.id }, "Não foi possível fazer a troca. Tenta novamente.");
+    if (message) {
+      setToast(message); setTimeout(() => setToast(null), 2600);
       return;
     }
     const card = POOL.find((c) => c.id === data.cardId) || target;
@@ -1578,10 +1588,9 @@ function App() {
     if (!c) return;
     setCodeInput("");
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
-    const { data, error } = await supabase.functions.invoke("redeem-code", { body: { code: c } });
-    if (error || !data || data.error) {
-      const msg = await fnErrorMessage(error, data, "Não foi possível resgatar o código. Tenta novamente.");
-      setToast(msg); setTimeout(() => setToast(null), 2600);
+    const { data, message } = await invokeFn("redeem-code", { code: c }, "Não foi possível resgatar o código. Tenta novamente.");
+    if (message) {
+      setToast(message); setTimeout(() => setToast(null), 2600);
       return;
     }
     setCodesUsed(data.codesUsed);
@@ -1617,10 +1626,9 @@ function App() {
       setTimeout(() => setToast(null), 2400);
       return false;
     }
-    const { data, error } = await supabase.functions.invoke("wonder-pick", { body: { key, cardId: card.id } });
-    if (error || !data || data.error) {
-      const msg = await fnErrorMessage(error, data, "Não foi possível usar a Escolha. Tenta novamente.");
-      setToast(msg); setTimeout(() => setToast(null), 2600);
+    const { data, message } = await invokeFn("wonder-pick", { key, cardId: card.id }, "Não foi possível usar a Escolha. Tenta novamente.");
+    if (message) {
+      setToast(message); setTimeout(() => setToast(null), 2600);
       return false;
     }
     setEscolhas(data.escolhas);
