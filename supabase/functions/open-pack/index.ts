@@ -45,10 +45,17 @@ Deno.serve(async (req: Request) => {
 
   const { data: profile, error: profErr } = await admin
     .from("profiles")
-    .select("state")
+    .select("state, is_admin")
     .eq("id", userId)
     .single();
   if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
+
+  // aberturas "grátis" (sem claim de objetivo associado) ficam reservadas à
+  // conta admin enquanto não houver a troca de pontos da Twitch por packs.
+  // Recompensas de objetivos (claim presente) continuam disponíveis para todos.
+  if (!body.claim && !profile.is_admin) {
+    return jsonResponse({ error: "As aberturas grátis estão temporariamente desativadas. Em breve vais poder trocar pontos da Twitch por packs." }, 403);
+  }
 
   const state = (profile.state ?? {}) as Record<string, unknown>;
   const { collection, meta, hist, cardIds } = applyPackOpening(state, pack);

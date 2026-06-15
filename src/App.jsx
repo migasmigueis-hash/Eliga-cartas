@@ -5,7 +5,8 @@ import { supabase } from './lib/supabaseClient';
 /* ============================================================
    eLiga Portugal — Cartas Colecionáveis (protótipo v2)
    - Login local do jogo (contas guardadas por utilizador)
-   - Loja de packs (grátis na fase de testes)
+   - Loja de packs (aberturas grátis reservadas ao admin; jogadores ganham
+     packs via Objetivos e códigos promocionais — pontos Twitch em breve)
    - Trocas: 10 duplicados de uma raridade -> 1 carta da raridade acima
    - Coleção por utilizador, persistente
    - Fotos oficiais dos jogadores (site eLiga) nas cartas
@@ -1786,8 +1787,9 @@ function App() {
           <div style={{ marginBottom: 28 }}>
             <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: 0 }}>Loja de Packs</h1>
             <p style={{ color: "#8fa3bd", fontSize: 14, marginTop: 6, maxWidth: 620 }}>
-              Ganha pontos a assistir à transmissão da eLiga Portugal na Twitch e troca-os por packs.
-              Durante a fase de testes, <span style={{ color: "#1BF5A3" }}>todos os packs são grátis</span>.
+              Em breve: ganha pontos a assistir à transmissão da eLiga Portugal na Twitch e troca-os por packs.
+              Por agora, ganha packs através dos <span style={{ color: "#1BF5A3" }}>Objetivos</span> e de
+              <span style={{ color: "#1BF5A3" }}> códigos promocionais</span>.
             </p>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 20 }}>
@@ -1802,9 +1804,13 @@ function App() {
                 <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10, flex: 1 }}>
                   <div style={{ fontSize: 11, letterSpacing: 1.5, color: p.locked ? "#5c6c88" : p.accent, fontFamily: FONT }}>{p.sub.toUpperCase()}</div>
                   <div style={{ fontSize: 13, color: "#9FB0C8", flex: 1 }}>{p.desc}</div>
-                  <button onClick={() => openPack(p)} disabled={p.locked} style={{ ...btn(!p.locked), opacity: p.locked ? 0.4 : 1, cursor: p.locked ? "not-allowed" : "pointer", width: "100%" }}>
-                    {p.locked ? "Indisponível" : "Abrir grátis"}
-                  </button>
+                  {p.locked ? (
+                    <button disabled style={{ ...btn(false), opacity: 0.4, cursor: "not-allowed", width: "100%" }}>Indisponível</button>
+                  ) : isAdmin ? (
+                    <button onClick={() => openPack(p)} style={{ ...btn(true), width: "100%" }}>Abrir grátis (admin)</button>
+                  ) : (
+                    <button disabled style={{ ...btn(false), opacity: 0.4, cursor: "not-allowed", width: "100%" }}>Em breve (pontos Twitch)</button>
+                  )}
                 </div>
               </div>
             ))}
@@ -2689,7 +2695,7 @@ function App() {
         <div style={{ position: "fixed", inset: 0, zIndex: 80, background: "rgba(3,6,12,0.94)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <div style={{ width: 420, maxWidth: "100%", background: "#0E162E", border: "1px solid #1BF5A344", borderRadius: 18, padding: 28, textAlign: "center", animation: "pop 300ms ease-out" }}>
             {[
-              { emoji: "🎴", titulo: "Abre packs, coleciona cartas", texto: "Na Loja abres packs grátis com 3 cartas dos clubes e jogadores da eLiga Portugal. Quanto mais rara a carta, mais espetacular a revelação." },
+              { emoji: "🎴", titulo: "Abre packs, coleciona cartas", texto: "Cada pack tem 3 cartas dos clubes e jogadores da eLiga Portugal. Ganha packs através dos Objetivos e de códigos promocionais. Quanto mais rara a carta, mais espetacular a revelação." },
               { emoji: "🔁", titulo: "Troca e completa objetivos", texto: "Junta 10 duplicados e troca-os por uma carta de raridade superior. Os objetivos diários, semanais e permanentes dão packs extra — volta todos os dias!" },
               { emoji: "🏆", titulo: "Compete com a tua equipa", texto: "Escolhe 3 cartas, define um capitão (vale ×2!) e pontua em cada jornada com os efeitos das cartas. Sobe no ranking contra os outros colecionadores." },
             ].map((s, i) => i === onboardStep && (
