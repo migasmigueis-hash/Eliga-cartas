@@ -1130,7 +1130,7 @@ function App() {
   const [captain, setCaptain] = useState(null);
   const [pickSlot, setPickSlot] = useState(null);
   const [compResult, setCompResult] = useState(null);
-  const [rank, setRank] = useState({ scores: {} });
+  const [rank, setRank] = useState({ scores: {}, jornadas: {} });
   const [hist, setHist] = useState([]);
   const [muted, setMuted] = useState(false);
   const [showOdds, setShowOdds] = useState(false);
@@ -1185,15 +1185,15 @@ function App() {
     (async () => {
       // ranking — partilhado, vem do Supabase (Fase 4)
       try {
-        const { data: lb, error } = await supabase.from("leaderboard").select("username, score").order("score", { ascending: false });
+        const { data: lb, error } = await supabase.from("leaderboard").select("username, score, jornadas").order("score", { ascending: false });
         if (!error && lb) {
-          const scores = {};
-          lb.forEach((r) => { scores[r.username] = r.score; });
-          setRank({ scores });
+          const scores = {}, jornadasMap = {};
+          lb.forEach((r) => { scores[r.username] = r.score; jornadasMap[r.username] = r.jornadas; });
+          setRank({ scores, jornadas: jornadasMap });
         } else {
-          setRank({ scores: {} });
+          setRank({ scores: {}, jornadas: {} });
         }
-      } catch (e) { setRank({ scores: {} }); }
+      } catch (e) { setRank({ scores: {}, jornadas: {} }); }
 
       let profile = null;
       try {
@@ -1363,9 +1363,9 @@ function App() {
     setCompResult({ rows, total: data.total, j: data.j });
     setJHist(data.jHist);
     if (data.leaderboard) {
-      const scores = {};
-      data.leaderboard.forEach((r) => { scores[r.username] = r.score; });
-      setRank({ scores });
+      const scores = {}, jornadasMap = {};
+      data.leaderboard.forEach((r) => { scores[r.username] = r.score; jornadasMap[r.username] = r.jornadas; });
+      setRank({ scores, jornadas: jornadasMap });
     }
   };
   const pickCard = (card) => {
@@ -1526,13 +1526,13 @@ function App() {
         console.error("admin_reset_competicao falhou:", error.message, error);
         setToast("Não foi possível reiniciar a competição (ver consola).");
       } else {
-        const { data: lb, error: e2 } = await supabase.from("leaderboard").select("username, score").order("score", { ascending: false });
+        const { data: lb, error: e2 } = await supabase.from("leaderboard").select("username, score, jornadas").order("score", { ascending: false });
         if (!e2 && lb) {
-          const scores = {};
-          lb.forEach((r) => { scores[r.username] = r.score; });
-          setRank({ scores });
+          const scores = {}, jornadasMap = {};
+          lb.forEach((r) => { scores[r.username] = r.score; jornadasMap[r.username] = r.jornadas; });
+          setRank({ scores, jornadas: jornadasMap });
         } else {
-          setRank({ scores: {} });
+          setRank({ scores: {}, jornadas: {} });
         }
         setToast("Jornadas (de todos) e ranking reiniciados.");
       }
@@ -2003,10 +2003,12 @@ function App() {
               <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, overflow: "hidden" }}>
                 {Object.entries(rank.scores).sort((a, b) => b[1] - a[1]).map(([name, pts], i) => {
                   const isMe = name === username;
+                  const jog = (rank.jornadas || {})[name];
                   return (
                     <div key={name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "11px 18px", borderBottom: "1px solid #16203a", background: isMe ? "#1BF5A314" : "transparent" }}>
                       <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, width: 30, color: i === 0 ? "#F2C14E" : i === 1 ? "#c0cbd9" : i === 2 ? "#cd8f5a" : "#6f87a8" }}>{i + 1}º</span>
                       <span style={{ flex: 1, fontFamily: FONT, fontSize: 14, color: isMe ? "#1BF5A3" : "#E7EEF8", fontWeight: isMe ? 700 : 400 }}>{name}{isMe ? " (tu)" : ""}</span>
+                      {jog != null && <span style={{ fontFamily: FONT, fontSize: 12, color: "#6f87a8" }}>{jog} jornada{jog === 1 ? "" : "s"}</span>}
                       <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: "#fff" }}>{pts.toLocaleString("pt-PT")} pts</span>
                     </div>
                   );
@@ -2014,7 +2016,7 @@ function App() {
               </div>
             )}
             <div style={{ marginTop: 12, fontSize: 11.5, color: "#44557a" }}>
-              No protótipo, os restantes jogadores do ranking são simulados e os dados ficam neste dispositivo. Na versão final, o ranking é global e reinicia em cada competição (Etapas, Taça, Finals).
+              Ranking partilhado entre todos os jogadores reais, limitado a {JORNADA_LIMIT} jornadas por jogador nesta fase de testes.
             </div>
           </div>
 
