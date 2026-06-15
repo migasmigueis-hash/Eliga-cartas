@@ -1121,6 +1121,8 @@ function App() {
   const [username, setUsername] = useState(null);
   const [userId, setUserId] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [twitchLogin, setTwitchLogin] = useState(null);
+  const [twitchPoints, setTwitchPoints] = useState(0);
   const [authChecked, setAuthChecked] = useState(false);
   const [tab, setTab] = useState("loja");
   const [collection, setCollection] = useState({});
@@ -1177,6 +1179,22 @@ function App() {
     return () => { active = false; listener.subscription.unsubscribe(); clearInterval(t); };
   }, []);
 
+  // resultado do redirecionamento de "Ligar conta Twitch" (?twitch=linked|denied|taken|error)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const twitchResult = params.get("twitch");
+    if (!twitchResult) return;
+    const messages = {
+      linked: "Conta Twitch ligada com sucesso! 🟣",
+      denied: "Ligação à Twitch cancelada.",
+      taken: "Essa conta Twitch já está ligada a outro perfil eLiga Cartas.",
+      error: "Não foi possível ligar a conta Twitch. Tenta novamente.",
+    };
+    setToast(messages[twitchResult] || messages.error);
+    setTimeout(() => setToast(null), 3200);
+    window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
   // carregar progresso do utilizador a partir do Supabase (profiles.state),
   // com migração pontual do que existia em localStorage nas Fases 0/1
   useEffect(() => {
@@ -1197,11 +1215,13 @@ function App() {
 
       let profile = null;
       try {
-        const { data, error } = await supabase.from("profiles").select("username, state, is_admin").eq("id", userId).single();
+        const { data, error } = await supabase.from("profiles").select("username, state, is_admin, twitch_login, twitch_points").eq("id", userId).single();
         if (!error) profile = data;
       } catch (e) { /* sem ligação — segue com defaults/legado */ }
 
       setIsAdmin(!!profile?.is_admin);
+      setTwitchLogin(profile?.twitch_login || null);
+      setTwitchPoints(profile?.twitch_points || 0);
       if (profile?.username && profile.username !== username) setUsername(profile.username);
 
       let st = profile?.state && Object.keys(profile.state).length > 0 ? profile.state : null;
@@ -1260,9 +1280,19 @@ function App() {
   }, [collection, meta, lineup, captain, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, muted, onboardStep, username, userId]);
 
 
+  const linkTwitch = async () => {
+    const { data, error } = await supabase.functions.invoke("twitch-link-start", { body: {} });
+    if (error || !data || data.error) {
+      const msg = await fnErrorMessage(error, data, "Não foi possível iniciar a ligação à Twitch. Tenta novamente.");
+      setToast(msg); setTimeout(() => setToast(null), 2800);
+      return;
+    }
+    window.location.href = data.url;
+  };
+
   const logout = async () => {
     await supabase.auth.signOut();
-    setUsername(null); setIsAdmin(false); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
+    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
   const addCards = (cards) => setCollection((prev) => {
@@ -2347,6 +2377,27 @@ function App() {
           <main style={{ maxWidth: 940, margin: "0 auto", padding: "36px 20px 80px" }}>
             <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: 0 }}>Perfil de {username}</h1>
             <p style={{ color: "#8fa3bd", fontSize: 14, marginTop: 6 }}>{desbloq}/{conquistas.length} conquistas desbloqueadas · {ownedCount}/{POOL.length} cartas</p>
+
+            {/* conta Twitch */}
+            <div style={{ marginTop: 18, background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 22 }}>🟣</span>
+              {twitchLogin ? (
+                <>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: "#fff" }}>Twitch ligada: {twitchLogin}</div>
+                    <div style={{ fontSize: 12, color: "#6f87a8", marginTop: 2 }}>{twitchPoints.toLocaleString("pt-PT")} pontos Twitch</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: "#fff" }}>Conta Twitch não ligada</div>
+                    <div style={{ fontSize: 12, color: "#6f87a8", marginTop: 2 }}>Liga a tua conta para, em breve, trocar pontos ganhos na Twitch por packs.</div>
+                  </div>
+                  <button onClick={linkTwitch} style={{ ...btn(true), padding: "9px 18px", fontSize: 13 }}>Ligar conta Twitch</button>
+                </>
+              )}
+            </div>
 
             {/* estatísticas */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginTop: 22 }}>
