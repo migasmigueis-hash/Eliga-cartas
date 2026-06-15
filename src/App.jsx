@@ -407,73 +407,13 @@ function effectOf(card) {
   return { tipo: t, mag: m, label: FX_LABEL[t](m) };
 }
 
-/* pontuação por jornada (2 jogos) — valores visíveis no separador Competição */
+/* pontuação por jornada (2 jogos) — valores visíveis no separador Competição.
+   A simulação em si (simulatePerformance/scoreLineup) corre agora no servidor
+   — ver supabase/functions/_shared/jornadaScore.ts e play-jornada. */
 const SCORING = {
   jogador: { vit: 20, emp: 10, der: 2, golo: 3 },
   clube: { vit: 25, emp: 12, der: 5 },
 };
-
-/* simulação de jornada com adversários sorteados — a probabilidade de vitória usa a
-   % real da época 25/26 ajustada à força do adversário (mais fácil contra equipas de
-   baixo da tabela). Placeholder até haver resultados em direto da época 26/27. */
-function simulatePerformance(card) {
-  // casters não jogam — o valor deles vem exclusivamente dos efeitos de apoio
-  if (card.isCaster) return { vit: 0, emp: 0, der: 0, golos: 0, jogos: 0, games: [] };
-  const winBase = Math.max(0.12, Math.min(0.88, (card.v || 35) / 100));
-  const others = TEAMS.filter((t) => t.id !== card.team);
-  let vit = 0, emp = 0, der = 0, golos = 0;
-  const games = [];
-  for (let i = 0; i < 2; i++) {
-    const opp = others[Math.floor(Math.random() * others.length)];
-    const oppRank = TEAM_RANK[opp.id] || 18;
-    const winP = Math.max(0.08, Math.min(0.92, winBase + (oppRank - 9.5) * 0.022));
-    const r = Math.random();
-    let res;
-    if (r < winP) { vit++; res = "V"; } else if (r < winP + 0.16) { emp++; res = "E"; } else { der++; res = "D"; }
-    const g = Math.max(res === "V" ? 1 : 0, Math.round((card.mg || 4) + (Math.random() * 4 - 2)));
-    let og;
-    if (res === "V") og = Math.max(0, g - (1 + Math.floor(Math.random() * 3)));
-    else if (res === "E") og = g;
-    else og = g + 1 + Math.floor(Math.random() * 3);
-    golos += g;
-    games.push({ opp, oppRank, res, g, og });
-  }
-  return { vit, emp, der, golos, jogos: 2, games };
-}
-function scoreLineup(cards, captainIdx) {
-  const rows = cards.map((card, i) => {
-    const perf = simulatePerformance(card);
-    const base = card.isClub
-      ? perf.vit * SCORING.clube.vit + perf.emp * SCORING.clube.emp + perf.der * SCORING.clube.der
-      : perf.vit * SCORING.jogador.vit + perf.emp * SCORING.jogador.emp + perf.der * SCORING.jogador.der + perf.golos * SCORING.jogador.golo;
-    const fx = effectOf(card);
-    let bonus = 0;
-    if (fx.tipo === "artilheiro") bonus = perf.golos * fx.mag;
-    if (fx.tipo === "vencedor") bonus = perf.vit * fx.mag;
-    if (fx.tipo === "consistente") bonus = Math.round((base * fx.mag) / 100);
-    if (fx.tipo === "imparavel") bonus = perf.vit === 2 ? fx.mag : 0;
-    if (fx.tipo === "resiliente") bonus = perf.der * fx.mag;
-    if (fx.tipo === "cacagrandes") bonus = perf.games.filter((g) => g.res === "V" && g.oppRank <= 8).length * fx.mag;
-    if (fx.tipo === "vozdaliga") bonus = fx.mag;
-    return { card, perf, base, bonus, fx, synergy: 0, captain: i === captainIdx };
-  });
-  rows.forEach((r) => {
-    if (r.fx.tipo === "clube") rows.forEach((o) => { if (o !== r && o.card.team === r.card.team) o.synergy += Math.round(((o.base + o.bonus) * r.fx.mag) / 100); });
-    if (r.fx.tipo === "mentor") rows.forEach((o) => { if (o !== r) o.synergy += r.fx.mag; });
-    if (r.fx.tipo === "fortaleza") { const ders = rows.reduce((s, o) => s + o.perf.der, 0); r.synergy += ders * r.fx.mag; }
-    if (r.fx.tipo === "hype") {
-      const cap = rows.find((o) => o.captain);
-      if (cap && cap !== r) cap.synergy += Math.round(((cap.base + cap.bonus) * r.fx.mag) / 100);
-    }
-    if (r.fx.tipo === "analista") { const emps = rows.reduce((s, o) => s + o.perf.emp, 0); r.synergy += emps * r.fx.mag; }
-  });
-  rows.forEach((r) => {
-    r.subtotal = r.base + r.bonus + r.synergy;
-    if (r.captain) r.subtotal *= 2;
-  });
-  const total = rows.reduce((s, r) => s + r.subtotal, 0);
-  return { rows, total };
-}
 
 // nomes dos "bots" de preenchimento do ranking — semeados em
 // supabase/fase4_leaderboard.sql, evoluem no servidor (ver register_jornada)
@@ -1405,35 +1345,24 @@ function App() {
       setToast(`Limite de ${JORNADA_LIMIT} jornadas simuladas atingido (fase de testes).`); setTimeout(() => setToast(null), 2800);
       return;
     }
-    const res = scoreLineup(lineupCards, captain);
-    const jornadaNum = jHist.length + 1;
-
-    try {
-      const { data, error } = await supabase.rpc("register_jornada", { p_points: res.total });
-      if (error) {
-        console.error("register_jornada falhou:", error.message, error);
-        if (error.message?.includes("LIMITE_JORNADAS")) {
-          setToast(`Limite de ${JORNADA_LIMIT} jornadas simuladas atingido (fase de testes).`); setTimeout(() => setToast(null), 2800);
-        } else {
-          setToast("Não foi possível registar a jornada. Tenta novamente."); setTimeout(() => setToast(null), 2600);
-        }
-        return;
-      }
-      setCompResult({ ...res, j: jornadaNum });
-      setJHist((h) => [{
-        j: jornadaNum, t: Date.now(), total: res.total,
-        cards: lineupCards.map((c) => c.name),
-        cap: lineupCards[captain]?.name || "", capRarity: lineupCards[captain]?.rarity || null,
-        hasCaster: lineupCards.some((c) => c.isCaster),
-      }, ...h].slice(0, 30));
-      if (data) {
-        const scores = {};
-        data.forEach((r) => { scores[r.username] = r.score; });
-        setRank({ scores });
-      }
-    } catch (e) {
-      console.error("register_jornada — erro de ligação:", e);
-      setToast("Não foi possível registar a jornada. Tenta novamente."); setTimeout(() => setToast(null), 2600);
+    const { data, error } = await supabase.functions.invoke("play-jornada", { body: { lineup, captain } });
+    if (error || !data || data.error) {
+      let msg = await fnErrorMessage(error, data, "Não foi possível registar a jornada. Tenta novamente.");
+      msg = msg.replace(/^LIMITE_JORNADAS:\s*/, "");
+      setToast(msg); setTimeout(() => setToast(null), 2800);
+      return;
+    }
+    const rows = data.rows.map((r) => ({
+      ...r,
+      card: POOL.find((c) => c.id === r.cardId),
+      perf: { ...r.perf, games: r.perf.games.map((g) => ({ ...g, opp: TEAMS.find((t) => t.id === g.opp) || { id: g.opp, name: g.opp } })) },
+    }));
+    setCompResult({ rows, total: data.total, j: data.j });
+    setJHist(data.jHist);
+    if (data.leaderboard) {
+      const scores = {};
+      data.leaderboard.forEach((r) => { scores[r.username] = r.score; });
+      setRank({ scores });
     }
   };
   const pickCard = (card) => {
