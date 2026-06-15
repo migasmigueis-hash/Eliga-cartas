@@ -1201,7 +1201,6 @@ function App() {
   const [escolhas, setEscolhas] = useState(0);
   const [escSlot, setEscSlot] = useState(null);
   const [picksUsed, setPicksUsed] = useState({});
-  const [picksBump, setPicksBump] = useState(0);
   const [now, setNow] = useState(Date.now());
 
   const [onboardStep, setOnboardStep] = useState(null);
@@ -1224,8 +1223,6 @@ function App() {
         setUserId(data.session.user.id);
         setUsername(deriveUsername(data.session.user));
       }
-      const bump = await store.get("eliga-tcg-picks-bump");
-      if (bump) setPicksBump(parseInt(bump) || 0);
       if (active) setAuthChecked(true);
     })();
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -1379,12 +1376,18 @@ function App() {
   const objectives = useMemo(() => buildObjectives(meta, collection), [meta, collection]);
   const isClaimable = (o) => o.prog >= o.alvo && meta.claims[o.id] !== o.periodo;
   const claimableCount = objectives.filter(isClaimable).length;
-  const claimObjective = (o) => {
+  const claimObjective = async (o) => {
     if (!isClaimable(o)) return;
     if (o.reward.startsWith("escolha")) {
       const n = parseInt(o.reward.slice(7)) || 1;
-      setMeta((m) => ({ ...m, claims: { ...m.claims, [o.id]: o.periodo } }));
-      setEscolhas((e) => e + n);
+      const { data, error } = await supabase.functions.invoke("claim-objective", { body: { id: o.id, periodo: o.periodo } });
+      if (error || !data || data.error) {
+        const msg = await fnErrorMessage(error, data, "Não foi possível reclamar o objetivo. Tenta novamente.");
+        setToast(msg); setTimeout(() => setToast(null), 2600);
+        return;
+      }
+      setMeta(data.meta);
+      setEscolhas(data.escolhas);
       setToast(`+${n} Escolha${n > 1 ? "s" : ""}! 🎯 Usa-as no separador Escolhas.`); setTimeout(() => setToast(null), 2800);
     } else {
       openPack(PACKS.find((p) => p.id === o.reward) || PACKS[0], { id: o.id, periodo: o.periodo });
@@ -1594,29 +1597,37 @@ function App() {
     setTimeout(() => setToast(null), 2600);
   };
 
-  const redeemCode = () => {
+  const redeemCode = async () => {
     const c = codeInput.trim().toUpperCase();
     if (!c) return;
-    const entry = REDEEM_CODES[c];
-    if (!entry) { setToast("Código inválido."); setTimeout(() => setToast(null), 2200); return; }
-    if (codesUsed.includes(c)) { setToast("Esse código já foi usado nesta conta."); setTimeout(() => setToast(null), 2200); return; }
-    setCodesUsed((u) => [...u, c]);
     setCodeInput("");
-    if (entry.escolhas) {
-      setEscolhas((e) => e + entry.escolhas);
-      setToast(`+${entry.escolhas} Escolhas! 🎯`); setTimeout(() => setToast(null), 2600);
+    const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
+    const { data, error } = await supabase.functions.invoke("redeem-code", { body: { code: c } });
+    if (error || !data || data.error) {
+      const msg = await fnErrorMessage(error, data, "Não foi possível resgatar o código. Tenta novamente.");
+      setToast(msg); setTimeout(() => setToast(null), 2600);
+      return;
+    }
+    setCodesUsed(data.codesUsed);
+    if (data.type === "escolhas") {
+      setEscolhas(data.escolhas);
+      setToast(`+${data.amount} Escolhas! 🎯`); setTimeout(() => setToast(null), 2600);
     } else {
-      openPack(PACKS.find((p) => p.id === entry.pack) || PACKS[0]);
+      const cards = data.cardIds.map((id) => POOL.find((c2) => c2.id === id)).filter(Boolean);
+      setCollection(data.collection);
+      setMeta(data.meta);
+      setHist(data.hist);
+      const pack = PACKS.find((p) => p.id === REDEEM_CODES[c]?.pack) || PACKS[0];
+      setOpening({ pack, cards, ownedBefore, initialPhase: "pack", again: null });
     }
   };
 
   // ---- Escolhas (Wonder Pick) ----
   const pickSlotNow = Math.floor(now / PICK_SLOT_MS);
-  const boardSeed = pickSlotNow + picksBump * 1000003;
-  const boardKey = String(boardSeed);
-  const wonderBoards = useMemo(() => [0, 1, 2].map((i) => buildPickBoard(boardSeed + i * 7919)), [boardSeed]);
+  const boardKey = String(pickSlotNow);
+  const wonderBoards = useMemo(() => [0, 1, 2].map((i) => buildPickBoard(pickSlotNow + i * 7919)), [pickSlotNow]);
   const boardKeys = [0, 1, 2].map((i) => boardKey + "-" + i);
-  const premiumBoard = useMemo(() => buildPickBoard(boardSeed + 777777, true), [boardSeed]);
+  const premiumBoard = useMemo(() => buildPickBoard(pickSlotNow + 777777, true), [pickSlotNow]);
   const premiumKey = boardKey + "-p";
   const anyBoardFree = (escolhas > 0 && boardKeys.some((k) => !picksUsed[k])) || (escolhas >= 3 && !picksUsed[premiumKey]);
   const nextBoardIn = (pickSlotNow + 1) * PICK_SLOT_MS - now;
@@ -1624,23 +1635,22 @@ function App() {
     const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
     return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
   };
-  const wonderPick = (card, key, cost = 1) => {
+  const wonderPick = async (card, key, cost = 1) => {
     if (escolhas < cost || picksUsed[key]) return;
-    setEscolhas((e) => Math.max(0, e - cost));
-    setPicksUsed((u) => ({ ...u, [key]: true }));
-    addCards([card]);
-    const t = todayStr();
-    setMeta((m) => ({ ...m, escUso: { ...(m.escUso || {}), [t]: ((m.escUso || {})[t] || 0) + 1 } }));
-    setHist((h) => [{ t: Date.now(), pack: "Escolha 🎯", ids: [card.id] }, ...h].slice(0, 50));
+    const { data, error } = await supabase.functions.invoke("wonder-pick", { body: { key, cardId: card.id } });
+    if (error || !data || data.error) {
+      const msg = await fnErrorMessage(error, data, "Não foi possível usar a Escolha. Tenta novamente.");
+      setToast(msg); setTimeout(() => setToast(null), 2600);
+      return;
+    }
+    setEscolhas(data.escolhas);
+    setPicksUsed(data.picksUsed);
+    setCollection(data.collection);
+    setMeta(data.meta);
+    setHist(data.hist);
     playFx(card.rarity, muted);
     if (card.rarity === "epica") buzz(45);
     if (card.rarity === "lendaria") buzz([60, 40, 90]);
-  };
-  const adminRefreshBoard = async () => {
-    const n = picksBump + 1;
-    setPicksBump(n);
-    try { await store.set("eliga-tcg-picks-bump", String(n)); } catch (e) { /* ok */ }
-    setToast("Novo conjunto de Escolhas gerado."); setTimeout(() => setToast(null), 2200);
   };
 
   // regeneração passiva: +1 Escolha a cada 6 horas (acumula até 8 em ausências longas)
@@ -2084,9 +2094,6 @@ function App() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: "#39E6FF", background: "#39E6FF18", border: "1px solid #39E6FF55", borderRadius: 99, padding: "8px 18px" }}>🎯 {escolhas}</span>
-              {isAdmin && (
-                <button onClick={adminRefreshBoard} style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1, padding: "8px 14px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Regenerar (admin)</button>
-              )}
             </div>
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: "#6f87a8", fontFamily: FONT, letterSpacing: 1 }}>

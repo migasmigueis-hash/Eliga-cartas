@@ -9,8 +9,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
-import { PACKS, drawPack, hasEpicPlus, randomOfRarity, RARITY_ORDER, todayStr } from "../_shared/gameData.ts";
-import type { CardRef } from "../_shared/cardpool.ts";
+import { PACKS, applyPackOpening } from "../_shared/gameData.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
@@ -52,46 +51,19 @@ Deno.serve(async (req: Request) => {
   if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
 
   const state = (profile.state ?? {}) as Record<string, unknown>;
-  const collection: Record<string, number> = { ...((state.collection as Record<string, number>) ?? {}) };
-  const prevMeta = (state.meta as Record<string, unknown>) ?? {};
-  const meta: Record<string, unknown> = {
-    ...prevMeta,
-    packs: { ...((prevMeta.packs as Record<string, number>) ?? {}) },
-  };
-  const hist: unknown[] = Array.isArray(state.hist) ? [...(state.hist as unknown[])] : [];
-
-  // ---- sorteio (mesma lógica que existia no cliente) ----
-  let cards: CardRef[] = drawPack(pack);
-  const pity = (meta.pity as number) || 0;
-  if (!hasEpicPlus(cards) && pity + 1 >= 10) {
-    const rar = Math.random() < 0.12 ? "lendaria" : "epica";
-    cards[2] = randomOfRarity(rar, !!pack.specialBoost);
-    cards = [...cards].sort((a, b) => RARITY_ORDER[a.rarity] - RARITY_ORDER[b.rarity]);
-  }
-  const resetPity = hasEpicPlus(cards);
-
-  // ---- aplica o resultado ao estado ----
-  cards.forEach((c) => {
-    collection[c.id] = (collection[c.id] || 0) + 1;
-  });
-  meta.pity = resetPity ? 0 : pity + 1;
-  const today = todayStr();
-  const packsByDay = meta.packs as Record<string, number>;
-  packsByDay[today] = (packsByDay[today] || 0) + 1;
+  const { collection, meta, hist, cardIds } = applyPackOpening(state, pack);
 
   // marca o objetivo como reclamado (se aplicável), na mesma escrita
   // — evita a corrida entre o "claim" local e este pedido
   const claim = body.claim;
   if (claim && typeof claim.id === "string" && typeof claim.periodo === "string" && claim.id.length <= 40 && claim.periodo.length <= 20) {
+    const prevMeta = (state.meta as Record<string, unknown>) ?? {};
     const claims = { ...((prevMeta.claims as Record<string, string>) ?? {}) };
     claims[claim.id] = claim.periodo;
     meta.claims = claims;
   }
 
-  hist.unshift({ t: Date.now(), pack: pack.name, ids: cards.map((c) => c.id) });
-  const histTrimmed = hist.slice(0, 50);
-
-  const newState = { ...state, collection, meta, hist: histTrimmed };
+  const newState = { ...state, collection, meta, hist };
 
   const { error: updErr } = await admin
     .from("profiles")
@@ -99,10 +71,5 @@ Deno.serve(async (req: Request) => {
     .eq("id", userId);
   if (updErr) return jsonResponse({ error: updErr.message }, 500);
 
-  return jsonResponse({
-    cardIds: cards.map((c) => c.id),
-    collection,
-    meta,
-    hist: histTrimmed,
-  });
+  return jsonResponse({ cardIds, collection, meta, hist });
 });
