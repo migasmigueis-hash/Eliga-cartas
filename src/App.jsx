@@ -1328,10 +1328,10 @@ function App() {
     return next;
   });
 
-  const openPack = async (pack, claim) => {
+  const openPack = async (pack, claim, extra) => {
     if (pack.locked) return;
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
-    const { data, error } = await supabase.functions.invoke("open-pack", { body: { packId: pack.id, ...(claim ? { claim } : {}) } });
+    const { data, error } = await supabase.functions.invoke("open-pack", { body: { packId: pack.id, ...(claim ? { claim } : {}), ...(extra || {}) } });
     if (error || !data || data.error) {
       const msg = await fnErrorMessage(error, data, "Não foi possível abrir o pack. Tenta novamente.");
       setToast(msg); setTimeout(() => setToast(null), 2600);
@@ -1398,30 +1398,43 @@ function App() {
   // ---- competição fantasy ----
   const lineupCards = lineup.map((id) => (id ? POOL.find((c) => c.id === id) : null));
   const lineupFull = lineupCards.every(Boolean);
+  const JORNADA_LIMIT = 10;
   const simulateJornada = async () => {
     if (!lineupFull || captain === null) return;
+    if (jHist.length >= JORNADA_LIMIT) {
+      setToast(`Limite de ${JORNADA_LIMIT} jornadas simuladas atingido (fase de testes).`); setTimeout(() => setToast(null), 2800);
+      return;
+    }
     const res = scoreLineup(lineupCards, captain);
     const jornadaNum = jHist.length + 1;
-    setCompResult({ ...res, j: jornadaNum });
-    setJHist((h) => [{
-      j: jornadaNum, t: Date.now(), total: res.total,
-      cards: lineupCards.map((c) => c.name),
-      cap: lineupCards[captain]?.name || "", capRarity: lineupCards[captain]?.rarity || null,
-      hasCaster: lineupCards.some((c) => c.isCaster),
-    }, ...h].slice(0, 30));
 
     try {
       const { data, error } = await supabase.rpc("register_jornada", { p_points: res.total });
       if (error) {
         console.error("register_jornada falhou:", error.message, error);
-      } else if (data) {
+        if (error.message?.includes("LIMITE_JORNADAS")) {
+          setToast(`Limite de ${JORNADA_LIMIT} jornadas simuladas atingido (fase de testes).`); setTimeout(() => setToast(null), 2800);
+        } else {
+          setToast("Não foi possível registar a jornada. Tenta novamente."); setTimeout(() => setToast(null), 2600);
+        }
+        return;
+      }
+      setCompResult({ ...res, j: jornadaNum });
+      setJHist((h) => [{
+        j: jornadaNum, t: Date.now(), total: res.total,
+        cards: lineupCards.map((c) => c.name),
+        cap: lineupCards[captain]?.name || "", capRarity: lineupCards[captain]?.rarity || null,
+        hasCaster: lineupCards.some((c) => c.isCaster),
+      }, ...h].slice(0, 30));
+      if (data) {
         const scores = {};
         data.forEach((r) => { scores[r.username] = r.score; });
         setRank({ scores });
-        return;
       }
-    } catch (e) { console.error("register_jornada — erro de ligação:", e); }
-    setRank((r) => ({ scores: { ...r.scores, [username]: (r.scores[username] || 0) + res.total } }));
+    } catch (e) {
+      console.error("register_jornada — erro de ligação:", e);
+      setToast("Não foi possível registar a jornada. Tenta novamente."); setTimeout(() => setToast(null), 2600);
+    }
   };
   const pickCard = (card) => {
     if (pickSlot === null) return;
@@ -1496,16 +1509,16 @@ function App() {
     });
   };
 
-  const answerTrivia = (idx) => {
+  const answerTrivia = async (idx) => {
     const t = todayStr();
     if ((meta.trivia || {})[t]) return;
     const q = triviaOfDay();
     const ok = idx === q.a;
-    setMeta((m) => ({ ...m, trivia: { ...(m.trivia || {}), [t]: { pick: idx, ok } } }));
     if (ok) {
       playFx("rara", muted);
-      openPack(PACKS[0]);
+      await openPack(PACKS[0], null, { trivia: { day: t, pick: idx, ok } });
     } else {
+      setMeta((m) => ({ ...m, trivia: { ...(m.trivia || {}), [t]: { pick: idx, ok } } }));
       setToast("Errada — volta amanhã para nova pergunta."); setTimeout(() => setToast(null), 2600);
     }
   };
@@ -1565,10 +1578,10 @@ function App() {
     setPrev((p) => ({ ...p, resolved: { rqf, rsf, champ: rchamp, qfHits, sfHits, champOk, score, rewardPack }, rewardClaimed: false }));
     playFx(score >= 130 ? "lendaria" : score >= 80 ? "epica" : "rara", muted);
   };
-  const claimPrevReward = () => {
+  const claimPrevReward = async () => {
     if (!prev.resolved || !prev.resolved.rewardPack || prev.rewardClaimed) return;
     setPrev((p) => ({ ...p, rewardClaimed: true }));
-    openPack(PACKS.find((pk) => pk.id === prev.resolved.rewardPack) || PACKS[0]);
+    await openPack(PACKS.find((pk) => pk.id === prev.resolved.rewardPack) || PACKS[0], null, { prevReward: true });
   };
   const clearPrev = () => setPrev(EMPTY_PREV);
 
@@ -2023,10 +2036,15 @@ function App() {
             ))}
           </div>
 
-          <div style={{ display: "flex", justifyContent: "center", marginTop: 26 }}>
-            <button onClick={simulateJornada} disabled={!lineupFull || captain === null} style={{ ...btn(lineupFull && captain !== null), opacity: lineupFull && captain !== null ? 1 : 0.35, cursor: lineupFull && captain !== null ? "pointer" : "not-allowed", fontSize: 14, padding: "14px 30px" }}>
-              {!lineupFull ? "Escolhe 3 cartas para jogar" : captain === null ? "Escolhe um capitão (×2) primeiro" : `Simular jornada ${jHist.length + 1}`}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, marginTop: 26 }}>
+            <button onClick={simulateJornada} disabled={!lineupFull || captain === null || jHist.length >= JORNADA_LIMIT} style={{ ...btn(lineupFull && captain !== null && jHist.length < JORNADA_LIMIT), opacity: lineupFull && captain !== null && jHist.length < JORNADA_LIMIT ? 1 : 0.35, cursor: lineupFull && captain !== null && jHist.length < JORNADA_LIMIT ? "pointer" : "not-allowed", fontSize: 14, padding: "14px 30px" }}>
+              {jHist.length >= JORNADA_LIMIT ? `Limite de ${JORNADA_LIMIT} jornadas atingido` : !lineupFull ? "Escolhe 3 cartas para jogar" : captain === null ? "Escolhe um capitão (×2) primeiro" : `Simular jornada ${jHist.length + 1}`}
             </button>
+            {jHist.length >= JORNADA_LIMIT && (
+              <div style={{ color: "#8fa3bd", fontSize: 12, textAlign: "center", maxWidth: 360 }}>
+                Limite de {JORNADA_LIMIT} jornadas simuladas por jogador, nesta fase de testes (sem integração com a Twitch ainda).
+              </div>
+            )}
           </div>
 
           {/* ranking */}

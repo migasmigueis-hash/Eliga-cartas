@@ -6,16 +6,28 @@
 //
 // O jogador nunca decide o resultado — só o servidor sabe as probabilidades
 // e só o servidor escreve em profiles.state (via service_role).
+//
+// "Aberturas grátis" (sem nenhum dos marcadores abaixo) ficam reservadas à
+// conta admin enquanto não houver troca de pontos da Twitch por packs.
+// Continuam disponíveis para todos os jogadores:
+//   - claim:      { id, periodo } — recompensa de objetivo (3b.3)
+//   - prevReward: true            — recompensa das Previsões
+//   - trivia:     { day, pick, ok } — recompensa da Pergunta do dia (uma vez por dia)
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
-import { PACKS, applyPackOpening } from "../_shared/gameData.ts";
+import { PACKS, applyPackOpening, todayStr } from "../_shared/gameData.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
   if (req.method !== "POST") return jsonResponse({ error: "Método não permitido." }, 405);
 
-  let body: { packId?: string; claim?: { id?: string; periodo?: string } };
+  let body: {
+    packId?: string;
+    claim?: { id?: string; periodo?: string };
+    prevReward?: boolean;
+    trivia?: { day?: string; pick?: number; ok?: boolean };
+  };
   try {
     body = await req.json();
   } catch {
@@ -50,24 +62,40 @@ Deno.serve(async (req: Request) => {
     .single();
   if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
 
-  // aberturas "grátis" (sem claim de objetivo associado) ficam reservadas à
-  // conta admin enquanto não houver a troca de pontos da Twitch por packs.
-  // Recompensas de objetivos (claim presente) continuam disponíveis para todos.
-  if (!body.claim && !profile.is_admin) {
+  const state = (profile.state ?? {}) as Record<string, unknown>;
+  const prevMeta = (state.meta as Record<string, unknown>) ?? {};
+
+  // valida a recompensa da Trivia (no máximo uma vez por dia, e só para "hoje")
+  let triviaPatch: { day: string; pick: number; ok: boolean } | null = null;
+  const trivia = body.trivia;
+  if (
+    trivia && typeof trivia.day === "string" && trivia.day === todayStr() &&
+    typeof trivia.pick === "number" && typeof trivia.ok === "boolean"
+  ) {
+    const prevTrivia = (prevMeta.trivia as Record<string, unknown>) ?? {};
+    if (!prevTrivia[trivia.day]) triviaPatch = { day: trivia.day, pick: trivia.pick, ok: trivia.ok };
+  }
+
+  const earned = !!body.claim || !!body.prevReward || !!triviaPatch;
+  if (!earned && !profile.is_admin) {
     return jsonResponse({ error: "As aberturas grátis estão temporariamente desativadas. Em breve vais poder trocar pontos da Twitch por packs." }, 403);
   }
 
-  const state = (profile.state ?? {}) as Record<string, unknown>;
   const { collection, meta, hist, cardIds } = applyPackOpening(state, pack);
 
   // marca o objetivo como reclamado (se aplicável), na mesma escrita
   // — evita a corrida entre o "claim" local e este pedido
   const claim = body.claim;
   if (claim && typeof claim.id === "string" && typeof claim.periodo === "string" && claim.id.length <= 40 && claim.periodo.length <= 20) {
-    const prevMeta = (state.meta as Record<string, unknown>) ?? {};
     const claims = { ...((prevMeta.claims as Record<string, string>) ?? {}) };
     claims[claim.id] = claim.periodo;
     meta.claims = claims;
+  }
+
+  // regista a resposta da Trivia (mesma escrita — evita a mesma classe de corrida)
+  if (triviaPatch) {
+    const prevTrivia = (prevMeta.trivia as Record<string, unknown>) ?? {};
+    meta.trivia = { ...prevTrivia, [triviaPatch.day]: { pick: triviaPatch.pick, ok: triviaPatch.ok } };
   }
 
   const newState = { ...state, collection, meta, hist };
