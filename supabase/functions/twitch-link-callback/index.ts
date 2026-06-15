@@ -20,10 +20,17 @@ import { verifyState } from "../_shared/twitchState.ts";
 
 const APP_URL = Deno.env.get("APP_URL") || "https://eligaportugal.vercel.app";
 
-function redirectTo(status: string): Response {
+// só voltamos para origens "razoáveis" (produção/Vercel/local) — o valor vem
+// do header Origin (controlado pelo browser, não pelo utilizador) capturado
+// em twitch-link-start, por isso já não é arbitrário, mas mantemos esta
+// lista como defesa extra.
+const ALLOWED_ORIGIN_RE = /^https:\/\/[a-z0-9-]+\.vercel\.app$|^https:\/\/eligaportugal\.vercel\.app$|^https?:\/\/localhost(:\d+)?$|^https?:\/\/127\.0\.0\.1(:\d+)?$/;
+
+function redirectTo(status: string, origin?: string | null): Response {
+  const base = origin && ALLOWED_ORIGIN_RE.test(origin) ? origin : APP_URL;
   return new Response(null, {
     status: 302,
-    headers: { Location: `${APP_URL}/?twitch=${status}` },
+    headers: { Location: `${base}/?twitch=${status}` },
   });
 }
 
@@ -36,14 +43,16 @@ Deno.serve(async (req: Request) => {
   if (errorParam) return redirectTo("denied");
   if (!code || !state) return redirectTo("error");
 
-  const userId = await verifyState(state);
-  if (!userId) return redirectTo("error");
+  const verified = await verifyState(state);
+  if (!verified) return redirectTo("error");
+  const userId = verified.uid;
+  const returnOrigin = verified.origin;
 
   const TWITCH_CLIENT_ID = Deno.env.get("TWITCH_CLIENT_ID");
   const TWITCH_CLIENT_SECRET = Deno.env.get("TWITCH_CLIENT_SECRET");
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
   const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) return redirectTo("error");
+  if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) return redirectTo("error", returnOrigin);
 
   const redirectUri = `${SUPABASE_URL}/functions/v1/twitch-link-callback`;
 
@@ -61,12 +70,12 @@ Deno.serve(async (req: Request) => {
         redirect_uri: redirectUri,
       }),
     });
-    if (!tokenRes.ok) return redirectTo("error");
+    if (!tokenRes.ok) return redirectTo("error", returnOrigin);
     const tokenData = await tokenRes.json();
     accessToken = tokenData.access_token;
-    if (!accessToken) return redirectTo("error");
+    if (!accessToken) return redirectTo("error", returnOrigin);
   } catch {
-    return redirectTo("error");
+    return redirectTo("error", returnOrigin);
   }
 
   // 2) obtém o utilizador Twitch autenticado
@@ -75,14 +84,14 @@ Deno.serve(async (req: Request) => {
     const usersRes = await fetch("https://api.twitch.tv/helix/users", {
       headers: { Authorization: `Bearer ${accessToken}`, "Client-Id": TWITCH_CLIENT_ID },
     });
-    if (!usersRes.ok) return redirectTo("error");
+    if (!usersRes.ok) return redirectTo("error", returnOrigin);
     const usersData = await usersRes.json();
     const u = usersData?.data?.[0];
-    if (!u?.id || !u?.login) return redirectTo("error");
+    if (!u?.id || !u?.login) return redirectTo("error", returnOrigin);
     twitchUserId = u.id;
     twitchLogin = u.login;
   } catch {
-    return redirectTo("error");
+    return redirectTo("error", returnOrigin);
   }
 
   // 3) grava no perfil
@@ -94,9 +103,9 @@ Deno.serve(async (req: Request) => {
 
   if (updErr) {
     // unique_violation: esta conta Twitch já está ligada a outro perfil
-    if ((updErr as { code?: string }).code === "23505") return redirectTo("taken");
-    return redirectTo("error");
+    if ((updErr as { code?: string }).code === "23505") return redirectTo("taken", returnOrigin);
+    return redirectTo("error", returnOrigin);
   }
 
-  return redirectTo("linked");
+  return redirectTo("linked", returnOrigin);
 });

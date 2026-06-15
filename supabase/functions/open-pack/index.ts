@@ -7,12 +7,15 @@
 // O jogador nunca decide o resultado — só o servidor sabe as probabilidades
 // e só o servidor escreve em profiles.state (via service_role).
 //
-// "Aberturas grátis" (sem nenhum dos marcadores abaixo) ficam reservadas à
-// conta admin enquanto não houver troca de pontos da Twitch por packs.
-// Continuam disponíveis para todos os jogadores:
+// Toda a abertura de pack (incluindo admin) tem de ter pelo menos um destes
+// marcadores — não há "aberturas grátis":
 //   - claim:      { id, periodo } — recompensa de objetivo (3b.3)
 //   - prevReward: true            — recompensa das Previsões
 //   - trivia:     { day, pick, ok } — recompensa da Pergunta do dia (uma vez por dia)
+//   - spendTwitchPoints: true     — debita pack.twitchCost de twitch_points (Fase 5.3)
+//
+// (O "Pack Admin" — ferramenta de testes que dá 1 de cada carta — não passa
+// por esta função; continua só client-side para a conta admin.)
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -27,6 +30,7 @@ Deno.serve(async (req: Request) => {
     claim?: { id?: string; periodo?: string };
     prevReward?: boolean;
     trivia?: { day?: string; pick?: number; ok?: boolean };
+    spendTwitchPoints?: boolean;
   };
   try {
     body = await req.json();
@@ -57,7 +61,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: profile, error: profErr } = await admin
     .from("profiles")
-    .select("state, is_admin")
+    .select("state")
     .eq("id", userId)
     .single();
   if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
@@ -76,9 +80,25 @@ Deno.serve(async (req: Request) => {
     if (!prevTrivia[trivia.day]) triviaPatch = { day: trivia.day, pick: trivia.pick, ok: trivia.ok };
   }
 
-  const earned = !!body.claim || !!body.prevReward || !!triviaPatch;
-  if (!earned && !profile.is_admin) {
-    return jsonResponse({ error: "As aberturas grátis estão temporariamente desativadas. Em breve vais poder trocar pontos da Twitch por packs." }, 403);
+  // gastar pontos Twitch (débito atómico, falha se o saldo for insuficiente)
+  let newTwitchPoints: number | undefined;
+  let spentPoints = false;
+  if (body.spendTwitchPoints) {
+    if (!pack.twitchCost) return jsonResponse({ error: "Este pack não pode ser aberto com pontos Twitch." }, 400);
+    const { data: pts, error: debitErr } = await userClient.rpc("debit_twitch_points", { p_amount: pack.twitchCost });
+    if (debitErr) {
+      const msg = debitErr.message?.includes("PONTOS_INSUFICIENTES")
+        ? "Não tens pontos Twitch suficientes para abrir este pack."
+        : debitErr.message || "Não foi possível debitar os pontos Twitch.";
+      return jsonResponse({ error: msg }, 400);
+    }
+    newTwitchPoints = pts as number;
+    spentPoints = true;
+  }
+
+  const earned = !!body.claim || !!body.prevReward || !!triviaPatch || spentPoints;
+  if (!earned) {
+    return jsonResponse({ error: "As aberturas grátis estão temporariamente desativadas. Liga a tua conta Twitch para trocar pontos por packs." }, 403);
   }
 
   const { collection, meta, hist, cardIds } = applyPackOpening(state, pack);
@@ -104,7 +124,14 @@ Deno.serve(async (req: Request) => {
     .from("profiles")
     .update({ state: newState, updated_at: new Date().toISOString() })
     .eq("id", userId);
-  if (updErr) return jsonResponse({ error: updErr.message }, 500);
+  if (updErr) {
+    // a escrita do pack falhou depois de já termos debitado pontos — repõe
+    // os pontos (melhor esforço) para não cobrar sem entregar o pack
+    if (spentPoints && pack.twitchCost && newTwitchPoints !== undefined) {
+      await admin.from("profiles").update({ twitch_points: newTwitchPoints + pack.twitchCost }).eq("id", userId);
+    }
+    return jsonResponse({ error: updErr.message }, 500);
+  }
 
-  return jsonResponse({ cardIds, collection, meta, hist });
+  return jsonResponse({ cardIds, collection, meta, hist, twitchPoints: newTwitchPoints });
 });

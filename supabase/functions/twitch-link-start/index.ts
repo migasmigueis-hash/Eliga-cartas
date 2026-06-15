@@ -31,7 +31,8 @@ Deno.serve(async (req: Request) => {
   const { data: userData, error: userErr } = await userClient.auth.getUser();
   if (userErr || !userData?.user) return jsonResponse({ error: "Não autenticado." }, 401);
 
-  const state = await signState(userData.user.id);
+  const origin = req.headers.get("Origin");
+  const state = await signState(userData.user.id, origin);
   const redirectUri = `${SUPABASE_URL}/functions/v1/twitch-link-callback`;
 
   const url = new URL("https://id.twitch.tv/oauth2/authorize");

@@ -36,17 +36,19 @@ async function hmacKey(): Promise<CryptoKey> {
 
 const TEN_MINUTES = 10 * 60 * 1000;
 
-// gera um "state" assinado que codifica o user_id e uma validade de 10 minutos
-export async function signState(userId: string): Promise<string> {
-  const payload = JSON.stringify({ uid: userId, exp: Date.now() + TEN_MINUTES });
+// gera um "state" assinado que codifica o user_id, a origem para onde voltar
+// (ex.: localhost durante o desenvolvimento, ou o domínio de produção) e uma
+// validade de 10 minutos
+export async function signState(userId: string, origin?: string | null): Promise<string> {
+  const payload = JSON.stringify({ uid: userId, exp: Date.now() + TEN_MINUTES, origin: origin || null });
   const payloadBytes = new TextEncoder().encode(payload);
   const key = await hmacKey();
   const sig = await crypto.subtle.sign("HMAC", key, payloadBytes);
   return b64url(payloadBytes) + "." + b64url(new Uint8Array(sig));
 }
 
-// verifica o "state" recebido no callback; devolve o user_id ou null se inválido/expirado
-export async function verifyState(state: string): Promise<string | null> {
+// verifica o "state" recebido no callback; devolve {uid, origin} ou null se inválido/expirado
+export async function verifyState(state: string): Promise<{ uid: string; origin: string | null } | null> {
   const parts = state.split(".");
   if (parts.length !== 2) return null;
   const [payloadPart, sigPart] = parts;
@@ -58,7 +60,7 @@ export async function verifyState(state: string): Promise<string | null> {
     const payload = JSON.parse(new TextDecoder().decode(payloadBytes));
     if (typeof payload.uid !== "string" || typeof payload.exp !== "number") return null;
     if (Date.now() > payload.exp) return null;
-    return payload.uid;
+    return { uid: payload.uid, origin: typeof payload.origin === "string" ? payload.origin : null };
   } catch {
     return null;
   }

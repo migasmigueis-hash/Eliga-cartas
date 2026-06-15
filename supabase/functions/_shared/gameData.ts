@@ -49,15 +49,17 @@ export interface PackDef {
   name: string;
   locked: boolean;
   specialBoost: 0 | 1;
+  twitchCost?: number;
 }
 
-// mantém os ids/nomes/locked/specialBoost em sincronia com PACKS em src/App.jsx
+// mantém os ids/nomes/locked/specialBoost/twitchCost em sincronia com PACKS em src/App.jsx
 export const PACKS: PackDef[] = [
-  { id: "base", name: "Pack Base", locked: false, specialBoost: 0 },
-  { id: "finals", name: "Pack Finals 25/26", locked: false, specialBoost: 1 },
+  { id: "base", name: "Pack Base", locked: false, specialBoost: 0, twitchCost: 50 },
+  { id: "finals", name: "Pack Finals 25/26", locked: false, specialBoost: 1, twitchCost: 150 },
   { id: "etapa1", name: "Pack Etapa 1 · 26/27", locked: true, specialBoost: 0 },
   { id: "taca", name: "Pack Taça eLiga 26/27", locked: true, specialBoost: 0 },
 ];
+
 
 // mantém em sincronia com PACK_ODDS em src/App.jsx
 export const PACK_ODDS: Record<0 | 1, Array<[Rarity, number]>> = {

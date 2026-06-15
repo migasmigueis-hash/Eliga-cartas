@@ -278,8 +278,8 @@ const REDEEM_CODES = {
 };
 
 const PACKS = [
-  { id: "base", name: "Pack Base", sub: "Época 25/26 · 3 cartas", desc: "Todos os clubes e jogadores da eLiga Portugal.", gradient: "linear-gradient(165deg,#0E2A4A 0%,#0A4D3C 60%,#1BF5A3 140%)", accent: "#1BF5A3", locked: false, specialBoost: 0 },
-  { id: "finals", name: "Pack Finals 25/26", sub: "Edição comemorativa · 3 cartas", desc: "Probabilidade aumentada de cartas especiais das Finals, Taça e Etapas.", gradient: "linear-gradient(165deg,#1a0a3a 0%,#5a1e9e 55%,#F2C14E 150%)", accent: "#F2C14E", locked: false, specialBoost: 1 },
+  { id: "base", name: "Pack Base", sub: "Época 25/26 · 3 cartas", desc: "Todos os clubes e jogadores da eLiga Portugal.", gradient: "linear-gradient(165deg,#0E2A4A 0%,#0A4D3C 60%,#1BF5A3 140%)", accent: "#1BF5A3", locked: false, specialBoost: 0, twitchCost: 50 },
+  { id: "finals", name: "Pack Finals 25/26", sub: "Edição comemorativa · 3 cartas", desc: "Probabilidade aumentada de cartas especiais das Finals, Taça e Etapas.", gradient: "linear-gradient(165deg,#1a0a3a 0%,#5a1e9e 55%,#F2C14E 150%)", accent: "#F2C14E", locked: false, specialBoost: 1, twitchCost: 150 },
   { id: "etapa1", name: "Pack Etapa 1 · 26/27", sub: "Cartas únicas da Etapa 1", desc: "Disponível com o arranque da nova época, em fevereiro de 2027.", gradient: "linear-gradient(165deg,#10243f,#1f3a5f)", accent: "#6f87a8", locked: true, lockLabel: "Fevereiro 2027" },
   { id: "taca", name: "Pack Taça eLiga 26/27", sub: "Cartas únicas da Taça", desc: "Disponível durante a Taça eLiga Portugal.", gradient: "linear-gradient(165deg,#241027,#3f1f3a)", accent: "#a86f9d", locked: true, lockLabel: "Brevemente" },
 ];
@@ -1150,7 +1150,6 @@ function App() {
   const [now, setNow] = useState(Date.now());
 
   const [onboardStep, setOnboardStep] = useState(null);
-  const [points] = useState(1250);
   const [opening, setOpening] = useState(null);
   const [filter, setFilter] = useState("todas");
   const [clubFilter, setClubFilter] = useState("todos");
@@ -1314,7 +1313,8 @@ function App() {
     setCollection(data.collection);
     setMeta(data.meta);
     setHist(data.hist);
-    setOpening({ pack, cards, ownedBefore, initialPhase: "pack", again: () => openPack(pack), againLabel: "Abrir outro" });
+    if (data.twitchPoints !== undefined && data.twitchPoints !== null) setTwitchPoints(data.twitchPoints);
+    setOpening({ pack, cards, ownedBefore, initialPhase: "pack", again: () => openPack(pack, null, extra), againLabel: "Abrir outro" });
   };
 
   // ---- trocas ----
@@ -1749,11 +1749,17 @@ function App() {
           ))}
         </nav>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: FONT, fontSize: 13 }}>
-            <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#1BF5A3", boxShadow: "0 0 8px #1BF5A3" }} />
-            <span style={{ color: "#fff", fontWeight: 700 }}>{points.toLocaleString("pt-PT")}</span>
-            <span style={{ color: "#6f87a8", fontSize: 11 }}>pts Twitch</span>
-          </div>
+          {twitchLogin ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: FONT, fontSize: 13 }}>
+              <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#9146FF", boxShadow: "0 0 8px #9146FF" }} />
+              <span style={{ color: "#fff", fontWeight: 700 }}>{twitchPoints.toLocaleString("pt-PT")}</span>
+              <span style={{ color: "#6f87a8", fontSize: 11 }}>pts Twitch</span>
+            </div>
+          ) : (
+            <button onClick={() => setTab("perfil")} style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: FONT, fontWeight: 600, fontSize: 12, letterSpacing: 0.5, color: "#fff", background: "#9146FF22", border: "1px solid #9146FF66", borderRadius: 99, padding: "6px 12px", cursor: "pointer", whiteSpace: "nowrap" }}>
+              🟣 Liga a tua Twitch
+            </button>
+          )}
           <div style={{ display: "flex", alignItems: "center", gap: 8, borderLeft: "1px solid #22304d", paddingLeft: 14 }}>
             <button onClick={toggleMute} aria-label={muted ? "Ativar som" : "Silenciar som"} style={{ fontSize: 15, padding: "4px 8px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d" }}>{muted ? "🔇" : "🔊"}</button>
             <span style={{ fontFamily: FONT, fontSize: 12, color: "#9FB0C8" }}>{username}</span>
@@ -1764,13 +1770,24 @@ function App() {
 
       {tab === "loja" && (
         <main style={{ maxWidth: 1100, margin: "0 auto", padding: "36px 20px 80px" }}>
-          <div style={{ marginBottom: 28 }}>
-            <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: 0 }}>Loja de Packs</h1>
-            <p style={{ color: "#8fa3bd", fontSize: 14, marginTop: 6, maxWidth: 620 }}>
-              Em breve: ganha pontos a assistir à transmissão da eLiga Portugal na Twitch e troca-os por packs.
-              Por agora, ganha packs através dos <span style={{ color: "#1BF5A3" }}>Objetivos</span> e de
-              <span style={{ color: "#1BF5A3" }}> códigos promocionais</span>.
-            </p>
+          <div style={{ marginBottom: 28, display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 14 }}>
+            <div>
+              <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: 0 }}>Loja de Packs</h1>
+              <p style={{ color: "#8fa3bd", fontSize: 14, marginTop: 6, maxWidth: 620 }}>
+                {twitchLogin
+                  ? "Resgata \"Pontos eLiga Cartas\" nos Channel Points da Twitch e troca-os por packs."
+                  : "Liga a tua conta Twitch (no Perfil) para trocar pontos de Channel Points por packs."}
+                {" "}Também ganhas packs através dos <span style={{ color: "#1BF5A3" }}>Objetivos</span> e de
+                <span style={{ color: "#1BF5A3" }}> códigos promocionais</span>.
+              </p>
+            </div>
+            {twitchLogin && (
+              <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 12, padding: "10px 18px", display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 18 }}>🟣</span>
+                <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: "#fff" }}>{twitchPoints.toLocaleString("pt-PT")}</span>
+                <span style={{ fontSize: 12, color: "#6f87a8" }}>pontos Twitch</span>
+              </div>
+            )}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 20 }}>
             {PACKS.map((p) => (
@@ -1786,10 +1803,12 @@ function App() {
                   <div style={{ fontSize: 13, color: "#9FB0C8", flex: 1 }}>{p.desc}</div>
                   {p.locked ? (
                     <button disabled style={{ ...btn(false), opacity: 0.4, cursor: "not-allowed", width: "100%" }}>Indisponível</button>
-                  ) : isAdmin ? (
-                    <button onClick={() => openPack(p)} style={{ ...btn(true), width: "100%" }}>Abrir grátis (admin)</button>
+                  ) : !twitchLogin ? (
+                    <button onClick={() => setTab("perfil")} style={{ ...btn(false), width: "100%" }}>Liga a tua conta Twitch</button>
+                  ) : twitchPoints >= p.twitchCost ? (
+                    <button onClick={() => openPack(p, null, { spendTwitchPoints: true })} style={{ ...btn(true), width: "100%" }}>Abrir ({p.twitchCost} pontos)</button>
                   ) : (
-                    <button disabled style={{ ...btn(false), opacity: 0.4, cursor: "not-allowed", width: "100%" }}>Em breve (pontos Twitch)</button>
+                    <button disabled style={{ ...btn(false), opacity: 0.4, cursor: "not-allowed", width: "100%" }}>Pontos insuficientes ({twitchPoints}/{p.twitchCost})</button>
                   )}
                 </div>
               </div>
@@ -2392,7 +2411,7 @@ function App() {
                 <>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: "#fff" }}>Conta Twitch não ligada</div>
-                    <div style={{ fontSize: 12, color: "#6f87a8", marginTop: 2 }}>Liga a tua conta para, em breve, trocar pontos ganhos na Twitch por packs.</div>
+                    <div style={{ fontSize: 12, color: "#6f87a8", marginTop: 2 }}>Liga a tua conta para trocar pontos de canal da Twitch eLiga Portugal por packs.</div>
                   </div>
                   <button onClick={linkTwitch} style={{ ...btn(true), padding: "9px 18px", fontSize: 13 }}>Ligar conta Twitch</button>
                 </>
@@ -2703,9 +2722,10 @@ function App() {
         <div style={{ position: "fixed", inset: 0, zIndex: 80, background: "rgba(3,6,12,0.94)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <div style={{ width: 420, maxWidth: "100%", background: "#0E162E", border: "1px solid #1BF5A344", borderRadius: 18, padding: 28, textAlign: "center", animation: "pop 300ms ease-out" }}>
             {[
-              { emoji: "🎴", titulo: "Abre packs, coleciona cartas", texto: "Cada pack tem 3 cartas dos clubes e jogadores da eLiga Portugal. Ganha packs através dos Objetivos e de códigos promocionais. Quanto mais rara a carta, mais espetacular a revelação." },
+              { emoji: "🎴", titulo: "Abre packs, coleciona cartas", texto: "Cada pack tem 3 cartas dos clubes e jogadores da eLiga Portugal. Quanto mais rara a carta, mais espetacular a revelação." },
               { emoji: "🔁", titulo: "Troca e completa objetivos", texto: "Junta 10 duplicados e troca-os por uma carta de raridade superior. Os objetivos diários, semanais e permanentes dão packs extra — volta todos os dias!" },
               { emoji: "🏆", titulo: "Compete com a tua equipa", texto: "Escolhe 3 cartas, define um capitão (vale ×2!) e pontua em cada jornada com os efeitos das cartas. Sobe no ranking contra os outros colecionadores." },
+              { emoji: "🟣", titulo: "Ganha packs com a Twitch", texto: "Liga a tua conta Twitch (no Perfil) e resgata \"Pontos eLiga Cartas\" nos Channel Points da transmissão — troca esses pontos por packs na Loja." },
             ].map((s, i) => i === onboardStep && (
               <div key={i}>
                 <div style={{ fontSize: 52, marginBottom: 12 }}>{s.emoji}</div>
@@ -2714,13 +2734,18 @@ function App() {
               </div>
             ))}
             <div style={{ display: "flex", gap: 6, justifyContent: "center", margin: "20px 0" }}>
-              {[0, 1, 2].map((i) => <span key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: i === onboardStep ? "#1BF5A3" : "#22304d" }} />)}
+              {[0, 1, 2, 3].map((i) => <span key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: i === onboardStep ? "#1BF5A3" : "#22304d" }} />)}
             </div>
             <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-              {onboardStep < 2 ? (
+              {onboardStep < 3 ? (
                 <>
                   <button onClick={() => setOnboardStep(onboardStep + 1)} style={btn(true)}>Seguinte</button>
                   <button onClick={finishOnboard} style={btn(false)}>Saltar</button>
+                </>
+              ) : !twitchLogin ? (
+                <>
+                  <button onClick={() => { finishOnboard(); linkTwitch(); }} style={btn(true)}>Ligar conta Twitch</button>
+                  <button onClick={finishOnboard} style={btn(false)}>Mais tarde</button>
                 </>
               ) : (
                 <button onClick={finishOnboard} style={btn(true)}>Começar a colecionar!</button>
