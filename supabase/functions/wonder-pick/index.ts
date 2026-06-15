@@ -2,9 +2,13 @@
 //
 // Substitui a lógica client-side de "Escolhas / Wonder Pick" (src/App.jsx,
 // wonderPick): o servidor recalcula o tabuleiro do slot atual (6h), confirma
-// que a carta pedida pertence mesmo a esse tabuleiro, que o jogador tem
-// Escolhas suficientes e que ainda não usou esta Escolha — e só depois
-// entrega a carta.
+// que a carta pedida pertence mesmo a esse tabuleiro, e só depois entrega a
+// carta.
+//
+// O débito de Escolhas + marcação do tabuleiro como usado é feito de forma
+// ATÓMICA pela função SQL apply_wonder_pick (UPDATE ... WHERE ... RETURNING
+// numa única instrução) — impede que vários pedidos quase simultâneos gastem
+// mais Escolhas do que o jogador tem.
 //
 // body: { key: string, cardId: string }
 //   key = "<pickSlot>-0" | "<pickSlot>-1" | "<pickSlot>-2" | "<pickSlot>-p"
@@ -59,23 +63,20 @@ Deno.serve(async (req: Request) => {
   if (userErr || !userData?.user) return jsonResponse({ error: "Não autenticado." }, 401);
   const userId = userData.user.id;
 
+  // ---- passo atómico: debita Escolhas + marca o tabuleiro como usado ----
+  // (corre como o próprio utilizador, security definer — impede corridas)
+  const { data: stateAfterReserve, error: reserveErr } = await userClient.rpc("apply_wonder_pick", { p_key: key, p_cost: cost });
+  if (reserveErr) {
+    const msg = reserveErr.message?.includes("WONDER_PICK_REJEITADO")
+      ? "Não tens Escolhas suficientes, ou esta Escolha já foi usada."
+      : reserveErr.message || "Não foi possível usar esta Escolha.";
+    return jsonResponse({ error: msg }, 400);
+  }
+
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-  const { data: profile, error: profErr } = await admin
-    .from("profiles")
-    .select("state")
-    .eq("id", userId)
-    .single();
-  if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
-
-  const state = (profile.state ?? {}) as Record<string, unknown>;
-  const escolhas = (state.escolhas as number) || 0;
-  if (escolhas < cost) return jsonResponse({ error: "Não tens Escolhas suficientes." }, 400);
-
-  const picksUsed = { ...((state.picksUsed as Record<string, boolean>) ?? {}) };
-  if (picksUsed[key]) return jsonResponse({ error: "Já usaste esta Escolha." }, 400);
-  picksUsed[key] = true;
-
+  // ---- aplica a carta/coleção/histórico a partir do estado já atualizado ----
+  const state = (stateAfterReserve ?? {}) as Record<string, unknown>;
   const collection = { ...((state.collection as Record<string, number>) ?? {}) };
   collection[cardId] = (collection[cardId] || 0) + 1;
 
@@ -89,8 +90,7 @@ Deno.serve(async (req: Request) => {
   hist.unshift({ t: Date.now(), pack: "Escolha 🎯", ids: [cardId] });
   const histTrimmed = hist.slice(0, 50);
 
-  const newEscolhas = escolhas - cost;
-  const newState = { ...state, escolhas: newEscolhas, picksUsed, collection, meta, hist: histTrimmed };
+  const newState = { ...state, collection, meta, hist: histTrimmed };
 
   const { error: updErr } = await admin
     .from("profiles")
@@ -98,5 +98,12 @@ Deno.serve(async (req: Request) => {
     .eq("id", userId);
   if (updErr) return jsonResponse({ error: updErr.message }, 500);
 
-  return jsonResponse({ escolhas: newEscolhas, picksUsed, collection, meta, hist: histTrimmed, cardId });
+  return jsonResponse({
+    escolhas: state.escolhas as number,
+    picksUsed: state.picksUsed,
+    collection,
+    meta,
+    hist: histTrimmed,
+    cardId,
+  });
 });

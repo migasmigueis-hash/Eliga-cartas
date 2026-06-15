@@ -1045,10 +1045,12 @@ function WonderBoard({ idx, board, boardKey, used, canUse, muted, onPick, nextIn
     setPhase("stack");
     setTimeout(() => setPhase("pick"), 1600);
   };
-  const choose = (pos) => {
+  const choose = async (pos) => {
     if (phase !== "pick") return;
-    setChosen(pos); setPhase("revealed");
-    onPick(board[order[pos]], boardKey, cost);
+    setPhase("checking");
+    const ok = await onPick(board[order[pos]], boardKey, cost);
+    if (ok) { setChosen(pos); setPhase("revealed"); }
+    else setPhase("pick");
   };
   const faceUp = phase === "idle" || phase === "revealed";
   const W = 116, H = W * 1.42;
@@ -1100,6 +1102,7 @@ function WonderBoard({ idx, board, boardKey, used, canUse, muted, onPick, nextIn
           </button>
         )}
         {phase === "pick" && <div style={{ fontFamily: FONT, fontSize: 13, letterSpacing: 2, color: "#1BF5A3", animation: "float 2s ease-in-out infinite" }}>TOCA NUMA CARTA</div>}
+        {phase === "checking" && <div style={{ fontFamily: FONT, fontSize: 13, letterSpacing: 2, color: "#8fa3bd" }}>A CONFIRMAR…</div>}
         {phase === "revealed" && chosen !== null && (
           <div style={{ fontSize: 12, color: "#9FB0C8" }}>
             Ganhaste <b style={{ color: RARITY[board[order[chosen]].rarity].color }}>{board[order[chosen]].name}</b> — assim ficaram baralhadas.
@@ -1579,12 +1582,16 @@ function App() {
     return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
   };
   const wonderPick = async (card, key, cost = 1) => {
-    if (escolhas < cost || picksUsed[key]) return;
+    if (escolhas < cost || picksUsed[key]) {
+      setToast(picksUsed[key] ? "Já usaste esta Escolha." : "Não tens Escolhas suficientes.");
+      setTimeout(() => setToast(null), 2400);
+      return false;
+    }
     const { data, error } = await supabase.functions.invoke("wonder-pick", { body: { key, cardId: card.id } });
     if (error || !data || data.error) {
       const msg = await fnErrorMessage(error, data, "Não foi possível usar a Escolha. Tenta novamente.");
       setToast(msg); setTimeout(() => setToast(null), 2600);
-      return;
+      return false;
     }
     setEscolhas(data.escolhas);
     setPicksUsed(data.picksUsed);
@@ -1594,6 +1601,7 @@ function App() {
     playFx(card.rarity, muted);
     if (card.rarity === "epica") buzz(45);
     if (card.rarity === "lendaria") buzz([60, 40, 90]);
+    return true;
   };
 
   // regeneração passiva: +1 Escolha a cada 6 horas (acumula até 8 em ausências longas)
