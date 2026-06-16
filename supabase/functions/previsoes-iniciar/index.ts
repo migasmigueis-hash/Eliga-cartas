@@ -1,8 +1,8 @@
 // supabase/functions/previsoes-iniciar/index.ts
 //
-// Substitui drawGroups (src/App.jsx): sorteia as 18 equipas em 3 grupos de 6
-// no servidor (para que o jogador não possa "encomendar" um agrupamento que
-// favoreça as suas previsões) e reinicia profiles.state.prev.
+// Modo simulacao: sorteia os grupos aleatoriamente (comportamento original).
+// Modo real: lê os grupos reais da etapa atual em liga_data (ex: "etapa1_grupos").
+//            Se os dados ainda não estiverem disponíveis, sorteia e assinala.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -17,33 +17,45 @@ Deno.serve(async (req: Request) => {
   const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
   const authHeader = req.headers.get("Authorization") ?? "";
-  const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-  });
+  const userClient = createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: authHeader } } });
   const { data: userData, error: userErr } = await userClient.auth.getUser();
   if (userErr || !userData?.user) return jsonResponse({ error: "Não autenticado." }, 401);
   const userId = userData.user.id;
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-  const { data: profile, error: profErr } = await admin
-    .from("profiles")
-    .select("state")
-    .eq("id", userId)
-    .single();
-  if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
+  const [profileRes, configRes] = await Promise.all([
+    admin.from("profiles").select("state").eq("id", userId).single(),
+    admin.from("liga_data").select("data").eq("key", "config").single(),
+  ]);
+  if (profileRes.error || !profileRes.data) return jsonResponse({ error: "Perfil não encontrado." }, 404);
 
-  const state = (profile.state ?? {}) as Record<string, unknown>;
+  const state = (profileRes.data.state ?? {}) as Record<string, unknown>;
+  const config = (configRes.data?.data ?? { modo: "simulacao", etapa: 1 }) as { modo: string; etapa: number | string };
 
-  const groups = drawGroups();
+  let groups: string[][];
+  let modoUsado = config.modo;
+
+  if (config.modo === "real") {
+    const etapaKey = config.etapa === "finals" ? "finals" : `etapa${config.etapa}`;
+    const { data: gruposRow } = await admin.from("liga_data").select("data").eq("key", `${etapaKey}_grupos`).single();
+    const gruposData = gruposRow?.data as Record<string, string[]> | null;
+    if (gruposData && gruposData.A && gruposData.B && gruposData.C) {
+      groups = [gruposData.A, gruposData.B, gruposData.C];
+    } else {
+      // fallback: sortear
+      modoUsado = "simulacao_fallback";
+      groups = drawGroups();
+    }
+  } else {
+    groups = drawGroups();
+  }
+
   const prev = { ...EMPTY_PREV, groups };
   const newState = { ...state, prev };
 
-  const { error: updErr } = await admin
-    .from("profiles")
-    .update({ state: newState, updated_at: new Date().toISOString() })
-    .eq("id", userId);
+  const { error: updErr } = await admin.from("profiles").update({ state: newState, updated_at: new Date().toISOString() }).eq("id", userId);
   if (updErr) return jsonResponse({ error: updErr.message }, 500);
 
-  return jsonResponse({ prev });
+  return jsonResponse({ prev, modo: modoUsado });
 });

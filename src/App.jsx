@@ -411,8 +411,8 @@ function effectOf(card) {
    A simulação em si (simulatePerformance/scoreLineup) corre agora no servidor
    — ver supabase/functions/_shared/jornadaScore.ts e play-jornada. */
 const SCORING = {
-  jogador: { vit: 20, emp: 10, der: 2, golo: 3 },
-  clube: { vit: 25, emp: 12, der: 5 },
+  jogador: { vit: 20, emp: 8, der: 3, golo: 2 },
+  clube: { vit: 20, emp: 8, der: 3 },
 };
 
 // nomes dos "bots" de preenchimento do ranking — semeados em
@@ -1149,6 +1149,10 @@ function App() {
   const [captain, setCaptain] = useState(null);
   const [pickSlot, setPickSlot] = useState(null);
   const [compResult, setCompResult] = useState(null);
+  const [ligaConfig, setLigaConfig] = useState(null); // config da liga (modo, etapa, fase, grupo)
+  const [adminSyncLog, setAdminSyncLog] = useState(null); // resultado do último sync
+  const [adminSyncing, setAdminSyncing] = useState(false);
+  const [adminConfigSaving, setAdminConfigSaving] = useState(false);
   const [rank, setRank] = useState({ scores: {}, jornadas: {} });
   const [hist, setHist] = useState([]);
   const [muted, setMuted] = useState(false);
@@ -1239,6 +1243,12 @@ function App() {
       setTwitchLogin(profile?.twitch_login || null);
       setTwitchPoints(profile?.twitch_points || 0);
       if (profile?.username && profile.username !== username) setUsername(profile.username);
+
+      // carregar config da liga (público — qualquer utilizador pode ler)
+      try {
+        const { data: cfgRow } = await supabase.from("liga_data").select("data").eq("key", "config").single();
+        if (cfgRow?.data) setLigaConfig(cfgRow.data); // useEffect carrega grupoEquipas automaticamente
+      } catch (e) { /* tabela pode não existir ainda */ }
 
       let st = profile?.state && Object.keys(profile.state).length > 0 ? profile.state : null;
       if (!st) st = await loadLegacyLocalState(username);
@@ -1385,11 +1395,46 @@ function App() {
   // ---- competição fantasy ----
   const lineupCards = lineup.map((id) => (id ? POOL.find((c) => c.id === id) : null));
   const lineupFull = lineupCards.every(Boolean);
+
+  // equipas que jogam hoje: carregadas do Supabase quando ligaConfig muda
+  const [grupoEquipasHoje, setGrupoEquipasHoje] = useState(new Set());
+  useEffect(() => {
+    const cfg = ligaConfig;
+    if (!cfg || cfg.modo !== "real" || cfg.fase !== "grupos" || !cfg.grupo || !cfg.etapa) {
+      setGrupoEquipasHoje(new Set());
+      return;
+    }
+    const etapaKey = cfg.etapa === "finals" ? "finals" : `etapa${cfg.etapa}`;
+    supabase.from("liga_data").select("data").eq("key", `${etapaKey}_grupos`).single()
+      .then(({ data: row }) => {
+        const equipas = row?.data?.[cfg.grupo] || [];
+        setGrupoEquipasHoje(new Set(equipas));
+      })
+      .catch(() => setGrupoEquipasHoje(new Set()));
+  }, [ligaConfig]);
+
+  // uma carta é elegível se: caster OU sem restrição OU a sua equipa joga hoje
+  const isCardEligible = (card) => {
+    if (!card) return true;
+    if (grupoEquipasHoje.size === 0) return true; // sem restrição (simulação ou sem dados)
+    if (card.isCaster) return true;
+    return grupoEquipasHoje.has(card.team);
+  };
+
+  // cartas no alinhamento que já não são elegíveis (mudança de dia)
+  const lineupIneligible = lineupCards.map((card) => card && !isCardEligible(card));
+  const hasIneligible = lineupIneligible.some(Boolean);
+  const lineupReady = lineupFull && !hasIneligible;
   const JORNADA_LIMIT = 10;
+  const grupoAtual = ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos" ? ligaConfig.grupo : null;
+  const jaJogouGrupoAtual = grupoAtual
+    ? jHist.some((j) => j.etapa === ligaConfig?.etapa && j.grupo === grupoAtual && j.modo !== "simulacao_fallback")
+    : jHist.length >= JORNADA_LIMIT;
   const simulateJornada = async () => {
     if (!lineupFull || captain === null) return;
-    if (jHist.length >= JORNADA_LIMIT) {
-      setToast(`Limite de ${JORNADA_LIMIT} jornadas simuladas atingido (fase de testes).`); setTimeout(() => setToast(null), 2800);
+    if (jaJogouGrupoAtual) {
+      setToast(grupoAtual ? `Já jogaste o Grupo ${grupoAtual} desta etapa.` : "Limite de jornadas atingido.");
+      setTimeout(() => setToast(null), 2800);
       return;
     }
     const { data, message } = await invokeFn("play-jornada", { lineup, captain }, "Não foi possível registar a jornada. Tenta novamente.");
@@ -1546,6 +1591,48 @@ function App() {
     if (!ok) setPrev((p) => ({ ...p, rewardClaimed: false }));
   };
   const clearPrev = () => setPrev(EMPTY_PREV);
+
+  // ---- Painel Admin: Liga ----
+  const adminSyncLiga = async () => {
+    setAdminSyncing(true); setAdminSyncLog(null);
+    // o fetch directo falha por CORS — tentar vários proxies públicos
+    const targetUrl = "https://esports.ligaportugal.pt/resultados.php?c=6";
+    const proxies = [
+      `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
+    ];
+    let html = "";
+    for (const proxy of proxies) {
+      try {
+        const res = await fetch(proxy);
+        if (res.ok) {
+          const text = await res.text();
+          if (text.length > 5000 && text.includes("ELiga Portugal")) { html = text; break; }
+        }
+      } catch (e) { /* tentar próximo */ }
+    }
+    if (!html) {
+      setAdminSyncing(false);
+      setAdminSyncLog({ ok: false, error: "Não foi possível aceder ao site via proxy. Usa o SQL manual para inserir dados." });
+      return;
+    }
+    const { data, message } = await invokeFn("sync-liga", { html }, "Erro ao sincronizar. Tenta novamente.");
+    setAdminSyncing(false);
+    if (message) { setAdminSyncLog({ ok: false, error: message }); return; }
+    setAdminSyncLog({ ok: true, ...data });
+    try {
+      const { data: cfgRow } = await supabase.from("liga_data").select("data").eq("key", "config").single();
+      if (cfgRow?.data) setLigaConfig({ ...cfgRow.data, _ts: Date.now() });
+    } catch (e) { /* ignora */ }
+  };
+  const adminSaveConfig = async (patch) => {
+    setAdminConfigSaving(true);
+    const { data, message } = await invokeFn("admin-liga-config", patch, "Erro ao guardar configuração.");
+    setAdminConfigSaving(false);
+    if (message) { setToast(message); setTimeout(() => setToast(null), 2600); return; }
+    setLigaConfig(data.config); // useEffect carrega grupoEquipas automaticamente
+    setToast("Configuração guardada."); setTimeout(() => setToast(null), 1800);
+  };
 
   // admin: reinicia o ranking partilhado e o histórico "As tuas jornadas" de TODOS os jogadores
   const adminResetRanking = async () => {
@@ -1739,6 +1826,7 @@ function App() {
             { k: "objetivos", label: "Objetivos", dot: claimableCount > 0 },
             { k: "colecao", label: `Coleção · ${ownedCount}/${POOL.length}` },
             { k: "perfil", label: "Perfil" },
+            ...(isAdmin ? [{ k: "admin", label: "⚙ Admin" }] : []),
           ].map(({ k, label, dot }) => (
             <button key={k} onClick={() => setTab(k)} style={{ position: "relative", fontFamily: FONT, fontWeight: 600, fontSize: 13, letterSpacing: 1, padding: "8px 13px", borderRadius: 8, cursor: "pointer", border: "none", whiteSpace: "nowrap", flexShrink: 0, background: tab === k ? "#1BF5A3" : "transparent", color: tab === k ? "#04140c" : "#9FB0C8" }}>
               {label}
@@ -1964,9 +2052,41 @@ function App() {
         <main style={{ maxWidth: 1000, margin: "0 auto", padding: "36px 20px 80px" }}>
           <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: 0 }}>Competição</h1>
           <p style={{ color: "#8fa3bd", fontSize: 14, marginTop: 6, maxWidth: 680 }}>
-            Escolhe 3 cartas da tua coleção. Em cada jornada da eLiga, ganhas pontos com a performance real dos jogadores e clubes escolhidos, amplificada pelos efeitos das cartas — quanto maior a raridade, mais forte o efeito.
-            <span style={{ color: "#F2C14E" }}> Até ao arranque da época, os resultados são simulados.</span>
+            {ligaConfig?.modo === "real"
+              ? <>Escolhe 3 cartas <b style={{ color: "#1BF5A3" }}>de equipas que jogam hoje</b>. Os teus pontos são calculados com os resultados reais das 5 jornadas do grupo — vitória, empate, derrota e golos de cada jogo contam. Casters podem sempre ser escolhidos.</>
+              : <>Escolhe 3 cartas da tua coleção. Em cada jornada da eLiga, ganhas pontos com a performance simulada dos jogadores e clubes escolhidos, amplificada pelos efeitos das cartas — quanto maior a raridade, mais forte o efeito. <span style={{ color: "#F2C14E" }}>Modo simulação ativo.</span></>}
           </p>
+          {ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos" && (
+            <div style={{ marginTop: 10, display: "inline-flex", alignItems: "center", gap: 8, background: "#1BF5A314", border: "1px solid #1BF5A344", borderRadius: 99, padding: "6px 14px" }}>
+              <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12, color: "#1BF5A3", letterSpacing: 1 }}>
+                {ligaConfig.etapa === "finals" ? "FINALS" : `ETAPA ${ligaConfig.etapa}`} · GRUPO {ligaConfig.grupo || "?"}
+              </span>
+              <span style={{ fontSize: 12, color: "#6f87a8" }}>· 5 jornadas hoje</span>
+            </div>
+          )}
+
+          {/* clubes que jogam hoje */}
+          {grupoEquipasHoje.size > 0 && (
+            <div style={{ marginTop: 14, background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "14px 18px" }}>
+              <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 2, color: "#39E6FF", marginBottom: 12 }}>EQUIPAS QUE JOGAM HOJE</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                {[...grupoEquipasHoje].map((teamId) => {
+                  const t = TEAMS.find((x) => x.id === teamId);
+                  if (!t) return null;
+                  return (
+                    <div key={teamId} style={{ display: "flex", alignItems: "center", gap: 7, background: "#060A16", border: `1px solid ${t.color}44`, borderRadius: 99, padding: "6px 12px" }}>
+                      <ClubLogo team={t} size={20} />
+                      <span style={{ fontFamily: FONT, fontSize: 12, color: "#c4d2e6" }}>{t.short}</span>
+                    </div>
+                  );
+                })}
+                <div style={{ display: "flex", alignItems: "center", gap: 7, background: "#060A16", border: "1px dashed #6f87a844", borderRadius: 99, padding: "6px 12px" }}>
+                  <span style={{ fontSize: 14 }}>🎙</span>
+                  <span style={{ fontFamily: FONT, fontSize: 12, color: "#6f87a8" }}>Casters — sempre</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* tabela de pontuação — contexto para a estratégia */}
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 22 }}>
@@ -2001,9 +2121,10 @@ function App() {
                     <div style={{ position: "relative" }}>
                       <Card card={card} width={190} />
                       {captain === i && <div style={{ position: "absolute", top: card.edition ? -22 : -10, left: "50%", transform: "translateX(-50%)", background: "#F2C14E", color: "#3a2a00", fontFamily: FONT, fontWeight: 700, fontSize: 11, letterSpacing: 1, padding: "3px 12px", borderRadius: 99, boxShadow: "0 0 14px rgba(242,193,78,0.6)", zIndex: 5, whiteSpace: "nowrap" }}>★ CAPITÃO ×2</div>}
+                      {lineupIneligible[i] && <div style={{ position: "absolute", inset: 0, borderRadius: 14, background: "rgba(255,60,60,0.18)", border: "2px solid #ff7b8a", display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ background: "#ff7b8a", color: "#fff", fontFamily: FONT, fontWeight: 700, fontSize: 11, padding: "4px 10px", borderRadius: 99 }}>NÃO JOGA HOJE</span></div>}
                     </div>
-                    <div style={{ marginTop: 10, fontSize: 11.5, lineHeight: 1.45, color: RARITY[card.rarity].color, background: "#0E162E", border: `1px solid ${RARITY[card.rarity].color}44`, borderRadius: 10, padding: "8px 10px" }}>
-                      ⚡ {effectOf(card).label}
+                    <div style={{ marginTop: 10, fontSize: 11.5, lineHeight: 1.45, color: lineupIneligible[i] ? "#ff7b8a" : RARITY[card.rarity].color, background: "#0E162E", border: `1px solid ${lineupIneligible[i] ? "#ff7b8a44" : RARITY[card.rarity].color + "44"}`, borderRadius: 10, padding: "8px 10px" }}>
+                      {lineupIneligible[i] ? "⚠ Substituir" : `⚡ ${effectOf(card).label}`}
                     </div>
                     <button onClick={(e) => { e.stopPropagation(); setCaptain(captain === i ? null : i); }}
                       style={{ marginTop: 8, fontFamily: FONT, fontSize: 11, letterSpacing: 1, padding: "6px 14px", borderRadius: 99, cursor: "pointer", border: `1px solid ${captain === i ? "#F2C14E" : "#22304d"}`, background: captain === i ? "#F2C14E22" : "transparent", color: captain === i ? "#F2C14E" : "#8fa3bd" }}>
@@ -2021,12 +2142,25 @@ function App() {
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, marginTop: 26 }}>
-            <button onClick={simulateJornada} disabled={!lineupFull || captain === null || jHist.length >= JORNADA_LIMIT} style={{ ...btn(lineupFull && captain !== null && jHist.length < JORNADA_LIMIT), opacity: lineupFull && captain !== null && jHist.length < JORNADA_LIMIT ? 1 : 0.35, cursor: lineupFull && captain !== null && jHist.length < JORNADA_LIMIT ? "pointer" : "not-allowed", fontSize: 14, padding: "14px 30px" }}>
-              {jHist.length >= JORNADA_LIMIT ? `Limite de ${JORNADA_LIMIT} jornadas atingido` : !lineupFull ? "Escolhe 3 cartas para jogar" : captain === null ? "Escolhe um capitão (×2) primeiro" : `Simular jornada ${jHist.length + 1}`}
+            {hasIneligible && (
+              <div style={{ background: "#ff7b8a14", border: "1px solid #ff7b8a44", borderRadius: 12, padding: "10px 18px", fontSize: 13, color: "#ff7b8a", textAlign: "center", maxWidth: 420 }}>
+                ⚠ Uma ou mais cartas da tua equipa não jogam hoje. Substitui-as antes de jogar.
+              </div>
+            )}
+            <button onClick={simulateJornada} disabled={!lineupReady || captain === null || jaJogouGrupoAtual}
+              style={{ ...btn(lineupReady && captain !== null && !jaJogouGrupoAtual), opacity: lineupReady && captain !== null && !jaJogouGrupoAtual ? 1 : 0.35, cursor: lineupReady && captain !== null && !jaJogouGrupoAtual ? "pointer" : "not-allowed", fontSize: 14, padding: "14px 30px" }}>
+              {jaJogouGrupoAtual
+                ? grupoAtual ? `✓ Grupo ${grupoAtual} jogado` : "Já jogaste todos os grupos"
+                : hasIneligible ? "Substitui as cartas inelegíveis"
+                : !lineupFull ? "Escolhe 3 cartas para jogar"
+                : captain === null ? "Escolhe um capitão (×2) primeiro"
+                : ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos"
+                  ? `▶ Jogar ${ligaConfig.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig.etapa}`} · Grupo ${ligaConfig.grupo || "?"}`
+                  : `▶ Simular jornada ${jHist.length + 1}`}
             </button>
-            {jHist.length >= JORNADA_LIMIT && (
-              <div style={{ color: "#8fa3bd", fontSize: 12, textAlign: "center", maxWidth: 360 }}>
-                Limite de {JORNADA_LIMIT} jornadas simuladas por jogador, nesta fase de testes (sem integração com a Twitch ainda).
+            {jaJogouGrupoAtual && grupoAtual && (
+              <div style={{ color: "#1BF5A3", fontSize: 12, textAlign: "center", maxWidth: 360 }}>
+                ✓ Já jogaste o Grupo {grupoAtual}. Aguarda que o admin mude para o Grupo seguinte.
               </div>
             )}
           </div>
@@ -2063,7 +2197,7 @@ function App() {
               </div>
             )}
             <div style={{ marginTop: 12, fontSize: 11.5, color: "#44557a" }}>
-              Ranking partilhado entre todos os jogadores reais, limitado a {JORNADA_LIMIT} jornadas por jogador nesta fase de testes.
+              Ranking partilhado entre todos os jogadores. Podes jogar um grupo por dia — 3 grupos por etapa.
             </div>
           </div>
 
@@ -2157,9 +2291,13 @@ function App() {
             {/* 1 · sorteio dos grupos */}
             {!prev.groups ? (
               <section style={{ marginTop: 26, background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "30px 20px", textAlign: "center" }}>
-                <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: "#fff", marginBottom: 8 }}>1 · Sorteio da fase de grupos</div>
-                <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 18 }}>As 18 equipas vão ser sorteadas em 3 grupos de 6.</div>
-                <button onClick={drawGroups} style={{ ...btn(true), fontSize: 14, padding: "14px 28px" }}>🎲 Sortear grupos</button>
+                <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: "#fff", marginBottom: 8 }}>1 · Fase de grupos</div>
+                {ligaConfig?.modo === "real"
+                  ? <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 18 }}>Os grupos são os da Etapa 1 real da eLiga Portugal. Clica para carregar.</div>
+                  : <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 18 }}>As 18 equipas vão ser sorteadas em 3 grupos de 6.</div>}
+                <button onClick={drawGroups} style={{ ...btn(true), fontSize: 14, padding: "14px 28px" }}>
+                  {ligaConfig?.modo === "real" ? "📋 Carregar grupos da Etapa 1" : "🎲 Sortear grupos"}
+                </button>
               </section>
             ) : (
               <>
@@ -2170,7 +2308,9 @@ function App() {
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, color: prev.qual.length === 8 ? "#1BF5A3" : "#8fa3bd" }}>{prev.qual.length}/8</span>
                       {!prev.groupResult && (
-                        <button onClick={drawGroups} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d", color: "#8fa3bd" }}>↻ Sortear grupos de novo</button>
+                        <button onClick={drawGroups} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d", color: "#8fa3bd" }}>
+                          {ligaConfig?.modo === "real" ? "↻ Recarregar grupos" : "↻ Sortear grupos de novo"}
+                        </button>
                       )}
                     </div>
                   </div>
@@ -2210,9 +2350,15 @@ function App() {
                   {!prev.groupResult ? (
                     <div style={{ textAlign: "center", marginTop: 18 }}>
                       <button onClick={simulateGroups} disabled={prev.qual.length !== 8} style={{ ...btn(prev.qual.length === 8), opacity: prev.qual.length === 8 ? 1 : 0.35, cursor: prev.qual.length === 8 ? "pointer" : "not-allowed", fontSize: 13, padding: "13px 26px" }}>
-                        ▶ Simular fase de grupos
+                        {ligaConfig?.modo === "real" ? "▶ Ver resultados reais" : "▶ Simular fase de grupos"}
                       </button>
-                      <div style={{ fontSize: 11.5, color: "#6f87a8", marginTop: 8 }}>{prev.qual.length === 8 ? "Fecha as tuas previsões e vê quem passou. No jogo final, estes serão os resultados reais das jornadas." : `Escolhe os 8 apurados primeiro (faltam ${8 - prev.qual.length}).`}</div>
+                      <div style={{ fontSize: 11.5, color: "#6f87a8", marginTop: 8 }}>
+                        {prev.qual.length === 8
+                          ? ligaConfig?.modo === "real"
+                            ? "Fecha as tuas previsões — os apurados serão os reais da Etapa 1."
+                            : "Fecha as tuas previsões e vê quem passou."
+                          : `Escolhe os 8 apurados primeiro (faltam ${8 - prev.qual.length}).`}
+                      </div>
                     </div>
                   ) : (
                     <div style={{ marginTop: 16, fontSize: 13, color: "#9FB0C8", background: "#0B1226", border: "1px solid #1BF5A344", borderRadius: 12, padding: "12px 16px" }}>
@@ -2540,11 +2686,21 @@ function App() {
         <div style={{ position: "fixed", inset: 0, zIndex: 55, background: "rgba(3,6,12,0.92)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setPickSlot(null)}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: 860, maxWidth: "100%", maxHeight: "86vh", overflowY: "auto", background: "#0E162E", border: "1px solid #1BF5A344", borderRadius: 18, padding: 24, animation: "pop 300ms ease-out" }}>
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff", marginBottom: 4 }}>Escolher carta para a posição {pickSlot + 1}</div>
-            <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 12 }}>Só podes usar cartas que tens na coleção. O efeito de cada carta está indicado por baixo.</div>
+            <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 12 }}>
+              {grupoEquipasHoje.size > 0
+                ? <>Só podes escolher cartas de equipas que jogam hoje (<b style={{ color: "#1BF5A3" }}>Grupo {ligaConfig?.grupo}</b>). Casters podem sempre ser escolhidos.</>
+                : "Só podes usar cartas que tens na coleção. O efeito de cada carta está indicado por baixo."}
+            </div>
             <div style={{ marginBottom: 16 }}>{clubSelect(pickClub, setPickClub)}</div>
             {(() => {
               const idents = new Set(lineup.map((id, ix) => (id && ix !== pickSlot ? cardIdentity(POOL.find((x) => x.id === id)) : null)).filter(Boolean));
-              const available = POOL.filter((c) => collection[c.id] > 0 && !lineup.includes(c.id) && !idents.has(cardIdentity(c)) && (pickClub === "todos" || (pickClub === "casters" ? c.isCaster : c.team === pickClub))).sort((a, b) => b.ovr - a.ovr);
+              const available = POOL.filter((c) =>
+                collection[c.id] > 0 &&
+                !lineup.includes(c.id) &&
+                !idents.has(cardIdentity(c)) &&
+                (pickClub === "todos" || (pickClub === "casters" ? c.isCaster : c.team === pickClub)) &&
+                isCardEligible(c)
+              ).sort((a, b) => b.ovr - a.ovr);
               if (!available.length) return <div style={{ textAlign: "center", color: "#6f87a8", fontSize: 13, padding: "30px 0" }}>{pickClub !== "todos" ? "Não tens cartas disponíveis deste clube." : "Não tens cartas disponíveis — abre packs na Loja primeiro."}</div>;
               return (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 16 }}>
@@ -2706,6 +2862,121 @@ function App() {
           </div>
         </div>
       )}
+
+      {tab === "admin" && isAdmin && (() => {
+        const cfg = ligaConfig || { modo: "simulacao", etapa: 1, fase: "grupos", grupo: "A" };
+        const modoReal = cfg.modo === "real";
+        const card16 = { background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "20px 22px", marginBottom: 16 };
+        const label = (t) => <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1.5, color: "#6f87a8", marginBottom: 8 }}>{t}</div>;
+        const sel = (val, opts, onChange) => (
+          <select value={val} onChange={(e) => onChange(e.target.value)}
+            style={{ background: "#060A16", color: "#fff", border: "1px solid #22304d", borderRadius: 8, padding: "8px 12px", fontFamily: FONT, fontSize: 13, cursor: "pointer" }}>
+            {opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        );
+        return (
+          <main style={{ maxWidth: 700, margin: "0 auto", padding: "36px 20px 80px" }}>
+            <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: "0 0 6px" }}>⚙ Painel Admin</h1>
+            <p style={{ color: "#6f87a8", fontSize: 13, marginBottom: 28 }}>Configuração da competição e sincronização de dados.</p>
+
+            {/* ESTADO ATUAL */}
+            <div style={card16}>
+              {label("ESTADO ATUAL")}
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+                {[
+                  ["Modo", modoReal ? "🟢 Resultados Reais" : "🔵 Simulação"],
+                  ["Etapa", cfg.etapa === "finals" ? "Finals" : `Etapa ${cfg.etapa}`],
+                  ["Fase", cfg.fase === "grupos" ? "Fase de Grupos" : "Eliminatórias"],
+                  ...(cfg.fase === "grupos" ? [["Grupo", `Grupo ${cfg.grupo || "?"}`]] : []),
+                ].map(([k, v]) => (
+                  <div key={k} style={{ background: "#060A16", border: "1px solid #1a2440", borderRadius: 10, padding: "8px 14px", minWidth: 100 }}>
+                    <div style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, color: "#6f87a8", marginBottom: 2 }}>{k}</div>
+                    <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, color: modoReal ? "#1BF5A3" : "#39E6FF" }}>{v}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* TOGGLE MODO */}
+              <button
+                onClick={() => adminSaveConfig({ modo: modoReal ? "simulacao" : "real" })}
+                disabled={adminConfigSaving}
+                style={{ ...btn(!modoReal), fontSize: 13, border: modoReal ? "1px solid #ff7b8a66" : "1px solid #1BF5A366", color: modoReal ? "#ff7b8a" : "#1BF5A3", background: "transparent" }}>
+                {modoReal ? "🔵 Mudar para Simulação" : "🟢 Mudar para Resultados Reais"}
+              </button>
+            </div>
+
+            {/* AVANÇAR FASE */}
+            <div style={card16}>
+              {label("AVANÇAR FASE")}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+                <div>
+                  <div style={{ fontSize: 11, color: "#6f87a8", marginBottom: 4 }}>Etapa</div>
+                  {sel(cfg.etapa, [[1,"Etapa 1"],[2,"Etapa 2"],[3,"Etapa 3"],["finals","Finals"]], (v) => adminSaveConfig({ etapa: v === "finals" ? "finals" : parseInt(v) }))}
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#6f87a8", marginBottom: 4 }}>Fase</div>
+                  {sel(cfg.fase, [["grupos","Fase de Grupos"],["eliminatorias","Eliminatórias"]], (v) => adminSaveConfig({ fase: v }))}
+                </div>
+                {cfg.fase === "grupos" && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "#6f87a8", marginBottom: 4 }}>Grupo</div>
+                    {sel(cfg.grupo || "A", [["A","Grupo A"],["B","Grupo B"],["C","Grupo C"]], (v) => adminSaveConfig({ grupo: v }))}
+                  </div>
+                )}
+                {adminConfigSaving && <span style={{ fontSize: 12, color: "#6f87a8", alignSelf: "center" }}>A guardar…</span>}
+              </div>
+            </div>
+
+            {/* SYNC */}
+            <div style={card16}>
+              {label("SINCRONIZAR DADOS DO SITE")}
+              <p style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 14, lineHeight: 1.6 }}>
+                Faz scraping de <span style={{ color: "#39E6FF" }}>esports.ligaportugal.pt</span>, extrai grupos, jornadas e eliminatórias e guarda em <code style={{ color: "#F2C14E" }}>liga_data</code>. Podes sempre corrigir dados manualmente no Supabase Dashboard.
+              </p>
+              <button onClick={adminSyncLiga} disabled={adminSyncing} style={{ ...btn(true), fontSize: 13 }}>
+                {adminSyncing ? "⏳ A sincronizar…" : "🔄 Sincronizar agora"}
+              </button>
+
+              {adminSyncLog && (
+                <div style={{ marginTop: 16, background: "#060A16", border: `1px solid ${adminSyncLog.ok ? "#1BF5A344" : "#ff7b8a44"}`, borderRadius: 12, padding: "14px 16px", fontSize: 12 }}>
+                  {adminSyncLog.ok ? (
+                    <>
+                      <div style={{ color: "#1BF5A3", fontFamily: FONT, fontWeight: 700, marginBottom: 8 }}>✓ Sync concluído</div>
+                      <div style={{ color: "#8fa3bd", lineHeight: 1.8 }}>
+                        Etapas: <b style={{ color: "#fff" }}>{adminSyncLog.summary?.etapas?.join(", ") || "—"}</b><br />
+                        Jornadas importadas: <b style={{ color: "#fff" }}>{adminSyncLog.summary?.totalMatches || 0}</b><br />
+                        Keys escritas: <b style={{ color: "#fff" }}>{adminSyncLog.upserted?.length || 0}</b>
+                      </div>
+                      {adminSyncLog.warnings?.length > 0 && (
+                        <div style={{ marginTop: 10, color: "#F2C14E" }}>
+                          <b>⚠ Avisos ({adminSyncLog.warnings.length}):</b>
+                          <ul style={{ margin: "6px 0 0 16px", lineHeight: 1.8 }}>
+                            {adminSyncLog.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div style={{ color: "#ff7b8a" }}>✗ {adminSyncLog.error}</div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* LINK SUPABASE */}
+            <div style={card16}>
+              {label("EDIÇÃO MANUAL")}
+              <p style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 12, lineHeight: 1.6 }}>
+                Para corrigir um resultado ou grupo manualmente, abre o Supabase Dashboard e edita a tabela <code style={{ color: "#F2C14E" }}>liga_data</code> diretamente.
+              </p>
+              <a href="https://supabase.com/dashboard/project/axfwwgefedphzeokmbhu/editor" target="_blank" rel="noopener noreferrer"
+                style={{ display: "inline-block", ...btn(false), fontSize: 13, textDecoration: "none" }}>
+                Abrir Supabase Dashboard ↗
+              </a>
+            </div>
+          </main>
+        );
+      })()}
 
       {onboardStep !== null && (
         <div style={{ position: "fixed", inset: 0, zIndex: 80, background: "rgba(3,6,12,0.94)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>

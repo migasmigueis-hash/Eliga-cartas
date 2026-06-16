@@ -1,8 +1,8 @@
 // supabase/functions/previsoes-simular-grupos/index.ts
 //
-// Substitui simulateGroups (src/App.jsx): valida os 8 apurados previstos
-// pelo jogador, simula a fase de grupos no servidor (apurados reais +
-// bracket dos quartos) e calcula quantos apurados o jogador acertou.
+// Modo simulacao: simula os resultados da fase de grupos via RNG.
+// Modo real: lê os apurados reais de liga_data (etapa1_grupos_resultado).
+//            Se não disponível, simula com fallback.
 //
 // body: { qual: string[] } — 8 ids de equipas, máx. 3 por grupo
 
@@ -15,43 +15,35 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "Método não permitido." }, 405);
 
   let body: { qual?: unknown };
-  try {
-    body = await req.json();
-  } catch {
-    return jsonResponse({ error: "Pedido inválido (JSON em falta)." }, 400);
-  }
+  try { body = await req.json(); } catch { return jsonResponse({ error: "Pedido inválido (JSON em falta)." }, 400); }
 
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
   const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
   const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
   const authHeader = req.headers.get("Authorization") ?? "";
-  const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-  });
+  const userClient = createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: authHeader } } });
   const { data: userData, error: userErr } = await userClient.auth.getUser();
   if (userErr || !userData?.user) return jsonResponse({ error: "Não autenticado." }, 401);
   const userId = userData.user.id;
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-  const { data: profile, error: profErr } = await admin
-    .from("profiles")
-    .select("state")
-    .eq("id", userId)
-    .single();
-  if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
+  const [profileRes, configRes] = await Promise.all([
+    admin.from("profiles").select("state").eq("id", userId).single(),
+    admin.from("liga_data").select("data").eq("key", "config").single(),
+  ]);
+  if (profileRes.error || !profileRes.data) return jsonResponse({ error: "Perfil não encontrado." }, 404);
 
-  const state = (profile.state ?? {}) as Record<string, unknown>;
+  const state = (profileRes.data.state ?? {}) as Record<string, unknown>;
   const prev = { ...EMPTY_PREV, ...((state.prev as Record<string, unknown>) ?? {}) };
+  const config = (configRes.data?.data ?? { modo: "simulacao", etapa: 1 }) as { modo: string; etapa: number | string };
 
   const groups = prev.groups;
   if (!Array.isArray(groups) || groups.length !== 3 || groups.some((g) => !Array.isArray(g) || g.length !== 6)) {
     return jsonResponse({ error: "Sorteia os grupos primeiro." }, 400);
   }
-  if (prev.groupResult) {
-    return jsonResponse({ error: "Já simulaste a fase de grupos desta previsão." }, 400);
-  }
+  if (prev.groupResult) return jsonResponse({ error: "Já simulaste a fase de grupos desta previsão." }, 400);
 
   const qual = body.qual;
   if (!Array.isArray(qual) || qual.length !== 8 || qual.some((id) => typeof id !== "string") || new Set(qual).size !== 8) {
@@ -67,27 +59,40 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  const { realQual, bracket } = simulateGroups(groups as string[][]);
-  const qualHits = (qual as string[]).filter((id) => realQual.includes(id)).length;
+  let realQual: string[];
+  let bracket: string[];
+  let modoUsado = config.modo;
 
+  if (config.modo === "real") {
+    const etapaKey = config.etapa === "finals" ? "finals" : `etapa${config.etapa}`;
+    const { data: resultRow } = await admin.from("liga_data").select("data").eq("key", `${etapaKey}_grupos_resultado`).single();
+    const resultData = resultRow?.data as { realQual: string[]; bracket: string[] } | null;
+    if (resultData?.realQual?.length === 8) {
+      realQual = resultData.realQual;
+      bracket = resultData.bracket?.length === 8 ? resultData.bracket : [...realQual].sort(() => Math.random() - 0.5);
+    } else {
+      modoUsado = "simulacao_fallback";
+      const r = simulateGroups(groups as string[][]);
+      realQual = r.realQual;
+      bracket = r.bracket;
+    }
+  } else {
+    const r = simulateGroups(groups as string[][]);
+    realQual = r.realQual;
+    bracket = r.bracket;
+  }
+
+  const qualHits = (qual as string[]).filter((id) => realQual.includes(id)).length;
   const newPrev = {
-    ...prev,
-    qual,
+    ...prev, qual,
     groupResult: { realQual, qualHits },
     bracket,
-    qf: [null, null, null, null],
-    sf: [null, null],
-    fin: null,
-    resolved: null,
-    rewardClaimed: false,
+    qf: [null, null, null, null], sf: [null, null], fin: null,
+    resolved: null, rewardClaimed: false,
   };
-  const newState = { ...state, prev: newPrev };
 
-  const { error: updErr } = await admin
-    .from("profiles")
-    .update({ state: newState, updated_at: new Date().toISOString() })
-    .eq("id", userId);
+  const { error: updErr } = await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", userId);
   if (updErr) return jsonResponse({ error: updErr.message }, 500);
 
-  return jsonResponse({ prev: newPrev });
+  return jsonResponse({ prev: newPrev, modo: modoUsado });
 });
