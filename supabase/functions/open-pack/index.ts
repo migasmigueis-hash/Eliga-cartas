@@ -86,6 +86,19 @@ Deno.serve(async (req: Request) => {
     claimPatch = { id: body.claim.id as string, periodo: body.claim.periodo as string };
   }
 
+  // valida a recompensa de Previsões (se aplicável): confirma que há um
+  // resultado resolvido, com recompensa, ainda não reclamada, e que é mesmo
+  // este pack
+  let prevRewardPatch = false;
+  if (body.prevReward) {
+    const prevState = (state.prev as Record<string, unknown>) ?? {};
+    const resolved = prevState.resolved as { rewardPack?: string | null } | null;
+    if (!resolved || !resolved.rewardPack) return jsonResponse({ error: "Não há recompensa de Previsões para reclamar." }, 400);
+    if (prevState.rewardClaimed) return jsonResponse({ error: "Recompensa de Previsões já reclamada." }, 400);
+    if (resolved.rewardPack !== pack.id) return jsonResponse({ error: "Este não é o pack da recompensa de Previsões." }, 400);
+    prevRewardPatch = true;
+  }
+
   // valida a recompensa da Trivia (no máximo uma vez por dia, e só para "hoje")
   let triviaPatch: { day: string; pick: number; ok: boolean } | null = null;
   const trivia = body.trivia;
@@ -113,7 +126,7 @@ Deno.serve(async (req: Request) => {
     spentPoints = true;
   }
 
-  const earned = !!claimPatch || !!body.prevReward || !!triviaPatch || spentPoints;
+  const earned = !!claimPatch || prevRewardPatch || !!triviaPatch || spentPoints;
   if (!earned) {
     return jsonResponse({ error: "As aberturas grátis estão temporariamente desativadas. Liga a tua conta Twitch para trocar pontos por packs." }, 403);
   }
@@ -134,7 +147,10 @@ Deno.serve(async (req: Request) => {
     meta.trivia = { ...prevTrivia, [triviaPatch.day]: { pick: triviaPatch.pick, ok: triviaPatch.ok } };
   }
 
-  const newState = { ...state, collection, meta, hist };
+  const newState: Record<string, unknown> = { ...state, collection, meta, hist };
+  if (prevRewardPatch) {
+    newState.prev = { ...((state.prev as Record<string, unknown>) ?? {}), rewardClaimed: true };
+  }
 
   const { error: updErr } = await admin
     .from("profiles")

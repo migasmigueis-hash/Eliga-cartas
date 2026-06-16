@@ -1317,12 +1317,12 @@ function App() {
   });
 
   const openPack = async (pack, claim, extra) => {
-    if (pack.locked) return;
+    if (pack.locked) return false;
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
     const { data, message } = await invokeFn("open-pack", { packId: pack.id, ...(claim ? { claim } : {}), ...(extra || {}) }, "Não foi possível abrir o pack. Tenta novamente.");
     if (message) {
       setToast(message); setTimeout(() => setToast(null), 2600);
-      return;
+      return false;
     }
     const cards = data.cardIds.map((id) => POOL.find((c) => c.id === id)).filter(Boolean);
     setCollection(data.collection);
@@ -1330,6 +1330,7 @@ function App() {
     setHist(data.hist);
     if (data.twitchPoints !== undefined && data.twitchPoints !== null) setTwitchPoints(data.twitchPoints);
     setOpening({ pack, cards, ownedBefore, initialPhase: "pack", again: () => openPack(pack, null, extra), againLabel: "Abrir outro" });
+    return true;
   };
 
   // ---- trocas ----
@@ -1497,11 +1498,14 @@ function App() {
 
   // ---- Previsões da etapa: grupos → previsão de apurados → SIMULAR grupos →
   //      bracket com os apurados REAIS → previsão das eliminatórias → SIMULAR → recompensa ----
-  const teamStrength = (id) => 19 - (TEAM_RANK[id] || 18);
-  const drawGroups = () => {
+  // (sorteios e simulações correm no servidor — ver previsoes-iniciar,
+  // previsoes-simular-grupos, previsoes-resolver — para que os "resultados
+  // reais" não possam ser fabricados pelo cliente)
+  const drawGroups = async () => {
     if (prev.resolved) return;
-    const shuffled = [...TEAMS].map((t) => t.id).sort(() => Math.random() - 0.5);
-    setPrev({ ...EMPTY_PREV, groups: [shuffled.slice(0, 6), shuffled.slice(6, 12), shuffled.slice(12, 18)] });
+    const { data, message } = await invokeFn("previsoes-iniciar", {}, "Não foi possível sortear os grupos. Tenta novamente.");
+    if (message) { setToast(message); setTimeout(() => setToast(null), 2600); return; }
+    setPrev(data.prev);
   };
   const toggleQual = (id, gi) => {
     if (prev.resolved || prev.groupResult) return;
@@ -1512,48 +1516,34 @@ function App() {
       return { ...p, qual: [...p.qual, id] };
     });
   };
-  const simulateGroups = () => {
+  const simulateGroups = async () => {
     if (prev.resolved || prev.groupResult || prev.qual.length !== 8) return;
-    // classificações por grupo ponderadas pela força real; passam 2 primeiros + 2 melhores terceiros
-    const standings = prev.groups.map((g) => [...g].sort((a, b) => (teamStrength(b) + Math.random() * 10) - (teamStrength(a) + Math.random() * 10)));
-    const thirds = standings.map((s) => s[2]);
-    const bestThirds = [...thirds].sort((a, b) => (teamStrength(b) + Math.random() * 8) - (teamStrength(a) + Math.random() * 8)).slice(0, 2);
-    const realQual = [...standings.flatMap((s) => s.slice(0, 2)), ...bestThirds];
-    const qualHits = prev.qual.filter((id) => realQual.includes(id)).length;
-    setPrev((p) => ({ ...p, groupResult: { realQual, qualHits } }));
+    const { data, message } = await invokeFn("previsoes-simular-grupos", { qual: prev.qual }, "Não foi possível simular a fase de grupos. Tenta novamente.");
+    if (message) { setToast(message); setTimeout(() => setToast(null), 2600); return; }
+    setPrev(data.prev);
     playFx("flip", muted);
   };
-  const drawBracket = () => {
-    if (prev.resolved || !prev.groupResult) return;
-    const order = [...prev.groupResult.realQual].sort(() => Math.random() - 0.5);
-    setPrev((p) => ({ ...p, bracket: order, qf: [null, null, null, null], sf: [null, null], fin: null }));
-  };
+  // limpa as escolhas das eliminatórias em curso (a bracket em si vem fixa do servidor)
   const redoBracket = () => {
     if (prev.resolved) return;
-    setPrev((p) => ({ ...p, bracket: null, qf: [null, null, null, null], sf: [null, null], fin: null }));
+    setPrev((p) => ({ ...p, qf: [null, null, null, null], sf: [null, null], fin: null }));
   };
   const pickQF = (i, id) => { if (prev.resolved) return; setPrev((p) => ({ ...p, qf: p.qf.map((w, ix) => (ix === i ? id : w)), sf: [null, null], fin: null })); };
   const pickSF = (i, id) => { if (prev.resolved) return; setPrev((p) => ({ ...p, sf: p.sf.map((w, ix) => (ix === i ? id : w)), fin: null })); };
   const pickFin = (id) => { if (prev.resolved) return; setPrev((p) => ({ ...p, fin: id })); };
-  const resolvePrev = () => {
+  const resolvePrev = async () => {
     if (!prev.fin || prev.resolved || !prev.bracket) return;
-    const playTie = (a, b) => ((teamStrength(a) + Math.random() * 12) > (teamStrength(b) + Math.random() * 12) ? a : b);
-    const b = prev.bracket;
-    const rqf = [playTie(b[0], b[1]), playTie(b[2], b[3]), playTie(b[4], b[5]), playTie(b[6], b[7])];
-    const rsf = [playTie(rqf[0], rqf[1]), playTie(rqf[2], rqf[3])];
-    const rchamp = playTie(rsf[0], rsf[1]);
-    const qfHits = prev.qf.filter((w, i) => w === rqf[i]).length;
-    const sfHits = prev.sf.filter((w, i) => w === rsf[i]).length;
-    const champOk = prev.fin === rchamp;
-    const score = prev.groupResult.qualHits * 10 + qfHits * 10 + sfHits * 15 + (champOk ? 50 : 0);
-    const rewardPack = score >= 130 ? "finals" : score >= 80 ? "base" : null;
-    setPrev((p) => ({ ...p, resolved: { rqf, rsf, champ: rchamp, qfHits, sfHits, champOk, score, rewardPack }, rewardClaimed: false }));
+    const { data, message } = await invokeFn("previsoes-resolver", { qf: prev.qf, sf: prev.sf, fin: prev.fin }, "Não foi possível resolver as eliminatórias. Tenta novamente.");
+    if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
+    setPrev(data.prev);
+    const score = data.prev.resolved.score;
     playFx(score >= 130 ? "lendaria" : score >= 80 ? "epica" : "rara", muted);
   };
   const claimPrevReward = async () => {
     if (!prev.resolved || !prev.resolved.rewardPack || prev.rewardClaimed) return;
     setPrev((p) => ({ ...p, rewardClaimed: true }));
-    await openPack(PACKS.find((pk) => pk.id === prev.resolved.rewardPack) || PACKS[0], null, { prevReward: true });
+    const ok = await openPack(PACKS.find((pk) => pk.id === prev.resolved.rewardPack) || PACKS[0], null, { prevReward: true });
+    if (!ok) setPrev((p) => ({ ...p, rewardClaimed: false }));
   };
   const clearPrev = () => setPrev(EMPTY_PREV);
 
@@ -2231,21 +2221,12 @@ function App() {
                   )}
                 </section>
 
-                {/* 4 · sorteio das eliminatórias (com os apurados REAIS) */}
-                {prev.groupResult && !prev.bracket && (
-                  <section style={{ marginTop: 18, background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "22px 20px", textAlign: "center" }}>
-                    <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#fff", marginBottom: 6 }}>4 · Sorteio das eliminatórias</div>
-                    <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 14 }}>Os 8 apurados reais vão a sorteio para a bracket dos quartos.</div>
-                    <button onClick={drawBracket} style={{ ...btn(true), fontSize: 13, padding: "12px 24px" }}>🎲 Sortear eliminatórias</button>
-                  </section>
-                )}
-
-                {/* 5 · previsão das eliminatórias */}
+                {/* 4 · previsão das eliminatórias (bracket já sorteada pelo servidor junto com o resultado dos grupos) */}
                 {prev.bracket && (
                   <section style={{ marginTop: 18, background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "18px 18px 20px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-                      <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, color: "#F2C14E" }}>5 · ELIMINATÓRIAS — ESCOLHE OS VENCEDORES</span>
-                      {!prev.resolved && <button onClick={redoBracket} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d", color: "#8fa3bd" }}>↻ Refazer sorteio</button>}
+                      <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, color: "#F2C14E" }}>4 · ELIMINATÓRIAS — ESCOLHE OS VENCEDORES</span>
+                      {!prev.resolved && <button onClick={redoBracket} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d", color: "#8fa3bd" }}>↻ Limpar escolhas</button>}
                     </div>
 
                     <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1.5, color: "#6f87a8", marginBottom: 8 }}>QUARTOS DE FINAL · +10 por acerto</div>
