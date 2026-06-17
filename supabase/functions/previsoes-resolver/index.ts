@@ -87,34 +87,59 @@ Deno.serve(async (req: Request) => {
 
   if (config.modo === "real") {
     const etapaKey = config.etapa === "finals" ? "finals" : `etapa${config.etapa}`;
-    const [qfRes, sfRes, finalRes] = await Promise.all([
-      admin.from("liga_data").select("data").eq("key", `${etapaKey}_qf`).single(),
-      admin.from("liga_data").select("data").eq("key", `${etapaKey}_sf`).single(),
-      admin.from("liga_data").select("data").eq("key", `${etapaKey}_final`).single(),
-    ]);
 
-    const qfMatches = (qfRes.data?.data ?? []) as KnockoutMatch[];
-    const sfMatches = (sfRes.data?.data ?? []) as KnockoutMatch[];
-    const finalMatches = (finalRes.data?.data ?? []) as KnockoutMatch[];
+    if (config.etapa === "finals") {
+      // Finals: calcular vencedores de cada série a partir de finals_jogos
+      const { data: jogosRow } = await admin.from("liga_data").select("data").eq("key", "finals_jogos").single();
+      const allJogos = (jogosRow?.data ?? []) as KnockoutMatch[];
+      if (allJogos.length === 0) return jsonResponse({ error: "Resultados das Finals ainda não disponíveis." }, 400);
 
-    if (qfMatches.length === 0) {
-      return jsonResponse({ error: "Resultados das eliminatórias ainda não disponíveis." }, 400);
+      // para cada confronto, contar vitórias (melhor de 3)
+      function seriesWinner(teamA: string, teamB: string): string {
+        let winsA = 0, winsB = 0;
+        for (const m of allJogos) {
+          if ((m.teamA === teamA && m.teamB === teamB) || (m.teamA === teamB && m.teamB === teamA)) {
+            const golosA = m.teamA === teamA ? m.golosA : m.golosB;
+            const golosB = m.teamA === teamA ? m.golosB : m.golosA;
+            if (golosA > golosB) winsA++; else if (golosB > golosA) winsB++;
+          }
+        }
+        return winsA >= winsB ? teamA : teamB;
+      }
+
+      rqf = [
+        seriesWinner(bracketArr[0], bracketArr[1]),
+        seriesWinner(bracketArr[2], bracketArr[3]),
+        seriesWinner(bracketArr[4], bracketArr[5]),
+        seriesWinner(bracketArr[6], bracketArr[7]),
+      ];
+      rsf = [seriesWinner(rqf[0], rqf[1]), seriesWinner(rqf[2], rqf[3])];
+      rchamp = seriesWinner(rsf[0], rsf[1]);
+    } else {
+      const [qfRes, sfRes, finalRes] = await Promise.all([
+        admin.from("liga_data").select("data").eq("key", `${etapaKey}_qf`).single(),
+        admin.from("liga_data").select("data").eq("key", `${etapaKey}_sf`).single(),
+        admin.from("liga_data").select("data").eq("key", `${etapaKey}_final`).single(),
+      ]);
+
+      const qfMatches = (qfRes.data?.data ?? []) as KnockoutMatch[];
+      const sfMatches = (sfRes.data?.data ?? []) as KnockoutMatch[];
+      const finalMatches = (finalRes.data?.data ?? []) as KnockoutMatch[];
+
+      if (qfMatches.length === 0) return jsonResponse({ error: "Resultados das eliminatórias ainda não disponíveis." }, 400);
+
+      rqf = [
+        knockoutWinner(qfMatches, bracketArr[0], bracketArr[1]) ?? bracketArr[0],
+        knockoutWinner(qfMatches, bracketArr[2], bracketArr[3]) ?? bracketArr[2],
+        knockoutWinner(qfMatches, bracketArr[4], bracketArr[5]) ?? bracketArr[4],
+        knockoutWinner(qfMatches, bracketArr[6], bracketArr[7]) ?? bracketArr[6],
+      ];
+      rsf = [
+        knockoutWinner(sfMatches, rqf[0], rqf[1]) ?? rqf[0],
+        knockoutWinner(sfMatches, rqf[2], rqf[3]) ?? rqf[2],
+      ];
+      rchamp = knockoutWinner(finalMatches, rsf[0], rsf[1]) ?? rsf[0];
     }
-
-    // QF: bracket[0]vsb[1], b[2]vsb[3], b[4]vsb[5], b[6]vsb[7]
-    rqf = [
-      knockoutWinner(qfMatches, bracketArr[0], bracketArr[1]) ?? bracketArr[0],
-      knockoutWinner(qfMatches, bracketArr[2], bracketArr[3]) ?? bracketArr[2],
-      knockoutWinner(qfMatches, bracketArr[4], bracketArr[5]) ?? bracketArr[4],
-      knockoutWinner(qfMatches, bracketArr[6], bracketArr[7]) ?? bracketArr[6],
-    ];
-
-    rsf = [
-      knockoutWinner(sfMatches, rqf[0], rqf[1]) ?? rqf[0],
-      knockoutWinner(sfMatches, rqf[2], rqf[3]) ?? rqf[2],
-    ];
-
-    rchamp = knockoutWinner(finalMatches, rsf[0], rsf[1]) ?? rsf[0];
   } else {
     const result = resolveBracket(bracketArr);
     rqf = result.rqf;
@@ -125,7 +150,9 @@ Deno.serve(async (req: Request) => {
   const qfHits = qfArr.filter((w, i) => w === rqf[i]).length;
   const sfHits = sfArr.filter((w, i) => w === rsf[i]).length;
   const champOk = fin === rchamp;
-  const score = groupResult.qualHits * 10 + qfHits * 10 + sfHits * 15 + (champOk ? 50 : 0);
+  const isFinals = (groupResult as Record<string, unknown>).isFinals === true;
+  const qualPts = isFinals ? 0 : ((groupResult as Record<string, unknown>).qualHits as number ?? 0) * 10;
+  const score = qualPts + qfHits * 10 + sfHits * 15 + (champOk ? 50 : 0);
   const rewardPack = scoreToRewardPack(score);
 
   const resolved = { rqf, rsf, champ: rchamp, qfHits, sfHits, champOk, score, rewardPack };

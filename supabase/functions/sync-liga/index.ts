@@ -207,7 +207,7 @@ Deno.serve(async (req: Request) => {
   let content = body.markdown ?? body.html ?? "";
   // etapa de contexto (usada quando o texto não tem "Etapa N" no label — ex: "Quartos de Final")
   const etapaContexto = body.etapa ? `etapa${body.etapa}` : null;
-  if (!content || content.length < 1000) {
+  if (!content || (content.length < 100 && !content.includes("ELiga Portugal"))) {
     try {
       const res = await fetch("https://esports.ligaportugal.pt/resultados.php?c=6", {
         headers: {
@@ -252,18 +252,36 @@ Deno.serve(async (req: Request) => {
     }
     const lcM = label.match(/Etapa\s+(\d+)\s*\|\s*Last Chance/i);
     if (lcM) { knockoutMatches[`etapa${lcM[1]}_lastchance`] ??= []; knockoutMatches[`etapa${lcM[1]}_lastchance`].push(...matches); continue; }
+    // Finals | Finals | Jornada N — todos os jogos vão para finals_jogos (pool único)
+    const finalsJornadaM = label.match(/Finals\s*\|\s*Finals\s*\|\s*Jornada\s+(\d+)/i);
+    if (finalsJornadaM) {
+      knockoutMatches["finals_jogos"] ??= [];
+      knockoutMatches["finals_jogos"].push(...matches); continue;
+    }
     const etapaM = label.match(/Etapa\s+(\d+)/i);
     const etapaKey = etapaM ? `etapa${etapaM[1]}` : (etapaContexto ?? "etapa1");
     if (/Quartos/i.test(label)) { knockoutMatches[`${etapaKey}_qf`] ??= []; knockoutMatches[`${etapaKey}_qf`].push(...matches); }
     else if (/Meias/i.test(label)) { knockoutMatches[`${etapaKey}_sf`] ??= []; knockoutMatches[`${etapaKey}_sf`].push(...matches); }
-    else if (/Final/i.test(label) && !/Meias/i.test(label)) { knockoutMatches[`${etapaKey}_final`] ??= []; knockoutMatches[`${etapaKey}_final`].push(...matches); }
+    // usar regex estrito para "Final" — não apanhar "Finals"
+    else if (/\bFinal\b/i.test(label) && !/\bFinals\b/i.test(label) && !/Meias/i.test(label)) { knockoutMatches[`${etapaKey}_final`] ??= []; knockoutMatches[`${etapaKey}_final`].push(...matches); }
   }
 
   const now = new Date().toISOString();
   const upserts: { key: string; data: unknown; updated_at: string }[] = [];
 
   for (const [etapa, grupos] of Object.entries(etapaGrupos)) {
-    upserts.push({ key: `${etapa}_grupos`, data: grupos, updated_at: now });
+    // merge com grupos já existentes na BD
+    // merge: só adicionar grupos novos, nunca apagar grupos já existentes na BD
+    let existingData: Record<string, string[]> = {};
+    try {
+      const { data: existingRow } = await admin.from("liga_data").select("data").eq("key", `${etapa}_grupos`).single();
+      if (existingRow?.data) existingData = existingRow.data as Record<string, string[]>;
+    } catch (_) { /* key ainda não existe — começa vazio */ }
+    const gruposMerged = { ...existingData };
+    for (const [g, equipas] of Object.entries(grupos)) {
+      if (!gruposMerged[g] || (gruposMerged[g] as string[]).length === 0) gruposMerged[g] = equipas as string[];
+    }
+    upserts.push({ key: `${etapa}_grupos`, data: gruposMerged, updated_at: now });
     // resultados por ronda, separados por grupo
     for (const [grupo, jornadas] of Object.entries(etapaJornadas[etapa] ?? {})) {
       for (const [jornada, matches] of Object.entries(jornadas as Record<string, MatchResult[]>)) {
@@ -282,6 +300,11 @@ Deno.serve(async (req: Request) => {
   }
   for (const [key, matches] of Object.entries(knockoutMatches)) {
     upserts.push({ key, data: matches, updated_at: now });
+    // para finals_jogos, extrair as 8 equipas e guardar em finals_grupos
+    if (key === "finals_jogos") {
+      const equipas = [...new Set(matches.flatMap((m: MatchResult) => [m.teamA, m.teamB]).filter(Boolean))];
+      if (equipas.length > 0) upserts.push({ key: "finals_grupos", data: { equipas }, updated_at: now });
+    }
   }
 
   if (upserts.length === 0) {

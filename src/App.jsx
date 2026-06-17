@@ -1415,15 +1415,20 @@ function App() {
         })
         .catch(() => setGrupoEquipasHoje(new Set()));
     } else if (cfg.fase === "eliminatorias") {
-      supabase.from("liga_data").select("data").eq("key", `${etapaKey}_qf`).single()
+      const equipasKey = etapaKey === "finals" ? "finals_grupos" : `${etapaKey}_qf`;
+      supabase.from("liga_data").select("data").eq("key", equipasKey).single()
         .then(({ data: row }) => {
-          const matches = row?.data || [];
-          const equipas = new Set();
-          for (const m of matches) {
-            if (m.teamA) equipas.add(m.teamA);
-            if (m.teamB) equipas.add(m.teamB);
+          let equipas = [];
+          if (etapaKey === "finals") {
+            equipas = row?.data?.equipas ?? [];
+          } else {
+            const matches = row?.data || [];
+            for (const m of matches) {
+              if (m.teamA) equipas.push(m.teamA);
+              if (m.teamB) equipas.push(m.teamB);
+            }
           }
-          setGrupoEquipasHoje(equipas);
+          setGrupoEquipasHoje(new Set(equipas));
         })
         .catch(() => setGrupoEquipasHoje(new Set()));
     } else {
@@ -1614,13 +1619,19 @@ function App() {
   const clearPrev = () => setPrev(EMPTY_PREV);
 
   // ---- Painel Admin: Liga ----
+  const adminPasteTextareaRef = useRef(null);
   const [adminPasteText, setAdminPasteText] = useState("");
+  const adminPasteTextRef = useRef("");
   const [adminPasteEtapa, setAdminPasteEtapa] = useState(() => String(ligaConfig?.etapa ?? "1"));
   const adminSyncLiga = async () => {
     setAdminSyncing(true); setAdminSyncLog(null);
-    // usar texto colado se disponível, senão tentar proxy
-    let html = adminPasteText.trim();
-    if (!html) {
+    // ler directamente do DOM para evitar problemas de closure/estado React
+    const trimmed = (adminPasteTextareaRef.current?.value ?? adminPasteTextRef.current ?? "").trim();
+    console.log("[sync] textarea DOM length:", adminPasteTextareaRef.current?.value?.length, "trimmed:", trimmed.slice(0, 80));
+    let html = trimmed;
+
+    // só usar proxy se não há texto colado
+    if (!trimmed) {
       const targetUrl = "https://esports.ligaportugal.pt/resultados.php?c=6";
       const proxies = [
         `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
@@ -1636,16 +1647,17 @@ function App() {
         } catch (e) { /* tentar próximo */ }
       }
     }
+
     if (!html) {
       setAdminSyncing(false);
-      setAdminSyncLog({ ok: false, error: "Sem dados para sincronizar. Cola o conteúdo da página abaixo ou tenta mais tarde." });
+      setAdminSyncLog({ ok: false, error: "Sem dados. Cola o conteúdo da página na textarea ou tenta mais tarde." });
       return;
     }
     const { data, message } = await invokeFn("sync-liga", { html, etapa: adminPasteEtapa }, "Erro ao sincronizar. Tenta novamente.");
     setAdminSyncing(false);
     if (message) { setAdminSyncLog({ ok: false, error: message }); return; }
     setAdminSyncLog({ ok: true, ...data });
-    setAdminPasteText("");
+    setAdminPasteText(""); adminPasteTextRef.current = "";
     try {
       const { data: cfgRow } = await supabase.from("liga_data").select("data").eq("key", "config").single();
       if (cfgRow?.data) setLigaConfig({ ...cfgRow.data, _ts: Date.now() });
@@ -2098,9 +2110,11 @@ function App() {
           {ligaConfig?.modo === "real" && ligaConfig?.fase === "eliminatorias" && (
             <div style={{ marginTop: 10, display: "inline-flex", alignItems: "center", gap: 8, background: "#F2C14E14", border: "1px solid #F2C14E44", borderRadius: 99, padding: "6px 14px" }}>
               <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12, color: "#F2C14E", letterSpacing: 1 }}>
-                {ligaConfig.etapa === "finals" ? "FINALS" : `ETAPA ${ligaConfig.etapa}`} · ELIMINATÓRIAS
+                {ligaConfig.etapa === "finals" ? "FINALS" : `ETAPA ${ligaConfig.etapa}`} · {ligaConfig.etapa === "finals" ? "FASE DE GRUPOS" : "ELIMINATÓRIAS"}
               </span>
-              <span style={{ fontSize: 12, color: "#6f87a8" }}>· QF · MF · Final</span>
+              <span style={{ fontSize: 12, color: "#6f87a8" }}>
+                {ligaConfig.etapa === "finals" ? "· 8 equipas · todos contra todos" : "· QF · MF · Final"}
+              </span>
             </div>
           )}
 
@@ -2331,21 +2345,90 @@ function App() {
               )}
             </div>
 
-            {/* 1 · sorteio dos grupos */}
-            {!prev.groups ? (
+            {/* 1 · sorteio dos grupos (ou carregar bracket das Finals) */}
+            {!prev.groups && !prev.groupResult ? (
               <section style={{ marginTop: 26, background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "30px 20px", textAlign: "center" }}>
-                <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: "#fff", marginBottom: 8 }}>1 · Fase de grupos</div>
-                {ligaConfig?.modo === "real"
-                  ? <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 18 }}>Os grupos são os da Etapa 1 real da eLiga Portugal. Clica para carregar.</div>
-                  : <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 18 }}>As 18 equipas vão ser sorteadas em 3 grupos de 6.</div>}
-                <button onClick={drawGroups} style={{ ...btn(true), fontSize: 14, padding: "14px 28px" }}>
-                  {ligaConfig?.modo === "real" ? "📋 Carregar grupos da Etapa 1" : "🎲 Sortear grupos"}
-                </button>
+                {ligaConfig?.etapa === "finals" ? (
+                  <>
+                    <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: "#F2C14E", marginBottom: 8 }}>🏆 Finals</div>
+                    <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 18 }}>8 equipas · todos contra todos · melhor de 3. Prevê os vencedores de cada confronto e o campeão.</div>
+                    <button onClick={drawGroups} style={{ ...btn(true), fontSize: 14, padding: "14px 28px" }}>
+                      🎲 Sortear bracket das Finals
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: "#fff", marginBottom: 8 }}>1 · Fase de grupos</div>
+                    {ligaConfig?.modo === "real"
+                      ? <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 18 }}>Os grupos são os da {ligaConfig.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig.etapa}`} real da eLiga Portugal.</div>
+                      : <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 18 }}>As 18 equipas vão ser sorteadas em 3 grupos de 6.</div>}
+                    <button onClick={drawGroups} style={{ ...btn(true), fontSize: 14, padding: "14px 28px" }}>
+                      {ligaConfig?.modo === "real" ? `📋 Carregar grupos da Etapa ${ligaConfig.etapa}` : "🎲 Sortear grupos"}
+                    </button>
+                  </>
+                )}
               </section>
+            ) : prev.groupResult?.isFinals ? (
+              // Finals: mostrar as 8 equipas + bracket directamente
+              <>
+                <section style={{ marginTop: 26, background: "#0E162E", border: "1px solid #F2C14E44", borderRadius: 16, padding: "16px 20px" }}>
+                  <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, color: "#F2C14E", letterSpacing: 1 }}>🏆 FINALS · 8 EQUIPAS</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                    {(prev.groupResult.realQual || []).map((id) => {
+                      const t = TEAMS.find((t) => t.id === id);
+                      return t ? <div key={id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#060A16", border: "1px solid #22304d", borderRadius: 99, padding: "4px 10px" }}><ClubLogo team={t} size={16} /><span style={{ fontFamily: FONT, fontSize: 11, color: "#8fa3bd" }}>{t.short}</span></div> : null;
+                    })}
+                  </div>
+                </section>
+                {prev.bracket && (
+                  <section style={{ marginTop: 18, background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "18px 18px 20px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+                      <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, color: "#F2C14E" }}>2 · FINALS — ESCOLHE OS VENCEDORES</span>
+                      {!prev.resolved && <button onClick={redoBracket} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d", color: "#8fa3bd" }}>↻ Limpar escolhas</button>}
+                    </div>
+                    <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1.5, color: "#6f87a8", marginBottom: 8 }}>QUARTOS DE FINAL · +10 por acerto</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {qfPairs.map((pair, i) => tie(`QF${i + 1}`, pair[0], pair[1], prev.qf[i], (id) => pickQF(i, id), prev.resolved ? prev.resolved.rqf[i] : null))}
+                    </div>
+                    {prev.qf[0] && prev.qf[1] && prev.qf[2] && prev.qf[3] && (
+                      <>
+                        <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1.5, color: "#6f87a8", margin: "16px 0 8px" }}>MEIAS-FINAIS · +15 por acerto</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          {tie("MF1", prev.qf[0], prev.qf[1], prev.sf[0], (id) => pickSF(0, id), prev.resolved ? prev.resolved.rsf[0] : null)}
+                          {tie("MF2", prev.qf[2], prev.qf[3], prev.sf[1], (id) => pickSF(1, id), prev.resolved ? prev.resolved.rsf[1] : null)}
+                        </div>
+                      </>
+                    )}
+                    {prev.sf[0] && prev.sf[1] && (
+                      <>
+                        <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1.5, color: "#F2C14E", margin: "16px 0 8px" }}>🏆 CAMPEÃO · +50 pts</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          {tie("FIN", prev.sf[0], prev.sf[1], prev.fin, pickFin, prev.resolved ? prev.resolved.champ : null)}
+                        </div>
+                      </>
+                    )}
+                    {prev.fin && !prev.resolved && (
+                      <div style={{ textAlign: "center", marginTop: 20 }}>
+                        <button onClick={resolveElim} style={{ ...btn(true), fontSize: 14, padding: "14px 28px" }}>✓ Fechar previsões</button>
+                      </div>
+                    )}
+                    {prev.resolved && (
+                      <div style={{ marginTop: 16, background: "#0B1226", border: "1px solid #1BF5A344", borderRadius: 12, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#1BF5A3", marginBottom: 4 }}>
+                          Resultado da etapa · <span style={{ color: "#F2C14E" }}>+{prev.resolved.score} pts</span>
+                        </div>
+                        <div style={{ fontSize: 13, color: "#8fa3bd" }}>
+                          QF: {prev.resolved.qfHits}/4 · MF: {prev.resolved.sfHits}/2 · Campeão: {prev.resolved.champOk ? "✓" : "✗"}
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                )}
+              </>
             ) : (
               <>
-                {/* 2 · previsão de apurados */}
-                <section style={{ marginTop: 26 }}>
+                {/* 2 · previsão de apurados — só para etapas normais, não Finals */}
+                {!prev.groupResult?.isFinals && <section style={{ marginTop: 26 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
                     <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, color: "#1BF5A3" }}>2 · QUEM PASSA AOS QUARTOS?</span>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -2359,7 +2442,7 @@ function App() {
                   </div>
                   <div style={{ fontSize: 12, color: "#6f87a8", marginBottom: 12 }}>Máximo 3 por grupo — passam os 2 primeiros de cada grupo e os 2 melhores terceiros (3+3+2).</div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-                    {prev.groups.map((g, gi) => {
+                    {prev.groups?.map((g, gi) => {
                       const nSel = g.filter((id) => prev.qual.includes(id)).length;
                       return (
                         <div key={gi} style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "14px 14px 16px" }}>
@@ -2408,13 +2491,15 @@ function App() {
                       ✓ Fase de grupos terminada — acertaste <b style={{ color: "#1BF5A3" }}>{prev.groupResult.qualHits}/8</b> apurados (<b style={{ color: "#1BF5A3" }}>+{prev.groupResult.qualHits * 10} pts</b>). Agora as eliminatórias jogam-se entre os apurados reais.
                     </div>
                   )}
-                </section>
+                </section>}
 
-                {/* 4 · previsão das eliminatórias (bracket já sorteada pelo servidor junto com o resultado dos grupos) */}
+                {/* 4 · previsão das eliminatórias */}
                 {prev.bracket && (
                   <section style={{ marginTop: 18, background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "18px 18px 20px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-                      <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, color: "#F2C14E" }}>4 · ELIMINATÓRIAS — ESCOLHE OS VENCEDORES</span>
+                      <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, color: "#F2C14E" }}>
+                        {prev.groupResult?.isFinals ? "2 · FINALS — ESCOLHE OS VENCEDORES" : "4 · ELIMINATÓRIAS — ESCOLHE OS VENCEDORES"}
+                      </span>
                       {!prev.resolved && <button onClick={redoBracket} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d", color: "#8fa3bd" }}>↻ Limpar escolhas</button>}
                     </div>
 
@@ -2457,7 +2542,8 @@ function App() {
                   <section style={{ marginTop: 16, background: "#0E162E", border: "1px solid #1BF5A355", borderRadius: 16, padding: "18px 20px" }}>
                     <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#fff", marginBottom: 8 }}>Resultado da etapa</div>
                     <div style={{ fontSize: 13, color: "#9FB0C8", lineHeight: 1.9 }}>
-                      Apurados: <b style={{ color: "#1BF5A3" }}>{prev.groupResult.qualHits}/8</b> (+{prev.groupResult.qualHits * 10}) · Quartos: <b style={{ color: "#1BF5A3" }}>{prev.resolved.qfHits}/4</b> (+{prev.resolved.qfHits * 10}) · Meias: <b style={{ color: "#1BF5A3" }}>{prev.resolved.sfHits}/2</b> (+{prev.resolved.sfHits * 15}) · Campeão: {prev.resolved.champOk ? <b style={{ color: "#F2C14E" }}>certo! (+50)</b> : <>foi <b style={{ color: "#F2C14E" }}>{teamOf(prev.resolved.champ).name}</b></>}
+                      {!prev.groupResult?.isFinals && prev.groupResult?.qualHits != null && <>Apurados: <b style={{ color: "#1BF5A3" }}>{prev.groupResult.qualHits}/8</b> (+{prev.groupResult.qualHits * 10}) · </>}
+                      Quartos: <b style={{ color: "#1BF5A3" }}>{prev.resolved.qfHits}/4</b> (+{prev.resolved.qfHits * 10}) · Meias: <b style={{ color: "#1BF5A3" }}>{prev.resolved.sfHits}/2</b> (+{prev.resolved.sfHits * 15}) · Campeão: {prev.resolved.champOk ? <b style={{ color: "#F2C14E" }}>certo! (+50)</b> : <>foi <b style={{ color: "#F2C14E" }}>{teamOf(prev.resolved.champ)?.name ?? prev.resolved.champ}</b></>}
                     </div>
                     <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 26, color: prev.resolved.score >= 130 ? "#F2C14E" : prev.resolved.score >= 80 ? "#1BF5A3" : "#8fa3bd", margin: "10px 0 14px" }}>{prev.resolved.score} pts</div>
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -2954,13 +3040,19 @@ function App() {
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
                 <div>
                   <div style={{ fontSize: 11, color: "#6f87a8", marginBottom: 4 }}>Etapa</div>
-                  {sel(cfg.etapa, [[1,"Etapa 1"],[2,"Etapa 2"],[3,"Etapa 3"],["finals","Finals"]], (v) => adminSaveConfig({ etapa: v === "finals" ? "finals" : parseInt(v) }))}
+                  {sel(cfg.etapa, [[1,"Etapa 1"],[2,"Etapa 2"],[3,"Etapa 3"],["finals","Finals"]], (v) => {
+                    const etapa = v === "finals" ? "finals" : parseInt(v);
+                    const patch = etapa === "finals" ? { etapa, fase: "eliminatorias" } : { etapa };
+                    adminSaveConfig(patch);
+                  })}
                 </div>
                 <div>
                   <div style={{ fontSize: 11, color: "#6f87a8", marginBottom: 4 }}>Fase</div>
-                  {sel(cfg.fase, [["grupos","Fase de Grupos"],["eliminatorias","Eliminatórias"]], (v) => adminSaveConfig({ fase: v }))}
+                  {cfg.etapa === "finals"
+                    ? <div style={{ background: "#060A16", color: "#fff", border: "1px solid #22304d", borderRadius: 8, padding: "8px 12px", fontFamily: FONT, fontSize: 13 }}>Eliminatórias</div>
+                    : sel(cfg.fase, [["grupos","Fase de Grupos"],["eliminatorias","Eliminatórias"]], (v) => adminSaveConfig({ fase: v }))}
                 </div>
-                {cfg.fase === "grupos" && (
+                {cfg.fase === "grupos" && cfg.etapa !== "finals" && (
                   <div>
                     <div style={{ fontSize: 11, color: "#6f87a8", marginBottom: 4 }}>Grupo</div>
                     {sel(cfg.grupo || "A", [["A","Grupo A"],["B","Grupo B"],["C","Grupo C"]], (v) => adminSaveConfig({ grupo: v }))}
@@ -2986,8 +3078,9 @@ function App() {
                   {sel(adminPasteEtapa, [["1","Etapa 1"],["2","Etapa 2"],["3","Etapa 3"],["finals","Finals"]], (v) => setAdminPasteEtapa(v))}
                 </div>
                 <textarea
+                  ref={adminPasteTextareaRef}
                   value={adminPasteText}
-                  onChange={(e) => setAdminPasteText(e.target.value)}
+                  onChange={(e) => { setAdminPasteText(e.target.value); adminPasteTextRef.current = e.target.value; }}
                   placeholder="Cola aqui o conteúdo da página de resultados (opcional)..."
                   style={{ width: "100%", minHeight: 80, background: "#060A16", color: "#8fa3bd", border: "1px solid #22304d", borderRadius: 8, padding: "10px 12px", fontFamily: "monospace", fontSize: 11, resize: "vertical", boxSizing: "border-box" }}
                 />

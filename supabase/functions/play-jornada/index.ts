@@ -180,18 +180,26 @@ Deno.serve(async (req: Request) => {
       total = rows.reduce((s, r) => s + r.subtotal, 0);
 
     } else {
-      // eliminatórias: carregar QF, MF e Final
-      const [qfRes, sfRes, finalRes] = await Promise.all([
-        admin.from("liga_data").select("data").eq("key", `${etapaKey}_qf`).single(),
-        admin.from("liga_data").select("data").eq("key", `${etapaKey}_sf`).single(),
-        admin.from("liga_data").select("data").eq("key", `${etapaKey}_final`).single(),
-      ]);
+      // eliminatórias ou Finals
+      let allMatches: RealMatch[] = [];
 
-      const allMatches: RealMatch[] = [
-        ...((qfRes.data?.data as RealMatch[]) ?? []),
-        ...((sfRes.data?.data as RealMatch[]) ?? []),
-        ...((finalRes.data?.data as RealMatch[]) ?? []),
-      ];
+      if (etapaKey === "finals") {
+        // Finals: pool único de todos os jogos
+        const { data: jogosRow } = await admin.from("liga_data").select("data").eq("key", "finals_jogos").maybeSingle();
+        allMatches = (jogosRow?.data as RealMatch[]) ?? [];
+      } else {
+        // eliminatórias normais: QF, MF e Final
+        const [qfRes, sfRes, finalRes] = await Promise.all([
+          admin.from("liga_data").select("data").eq("key", `${etapaKey}_qf`).maybeSingle(),
+          admin.from("liga_data").select("data").eq("key", `${etapaKey}_sf`).maybeSingle(),
+          admin.from("liga_data").select("data").eq("key", `${etapaKey}_final`).maybeSingle(),
+        ]);
+        allMatches = [
+          ...((qfRes.data?.data as RealMatch[]) ?? []),
+          ...((sfRes.data?.data as RealMatch[]) ?? []),
+          ...((finalRes.data?.data as RealMatch[]) ?? []),
+        ];
+      }
 
       if (allMatches.length === 0) {
         return jsonResponse({ error: "Dados das eliminatórias ainda não disponíveis. Contacta o admin para sincronizar." }, 400);
