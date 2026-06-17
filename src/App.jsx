@@ -1400,17 +1400,35 @@ function App() {
   const [grupoEquipasHoje, setGrupoEquipasHoje] = useState(new Set());
   useEffect(() => {
     const cfg = ligaConfig;
-    if (!cfg || cfg.modo !== "real" || cfg.fase !== "grupos" || !cfg.grupo || !cfg.etapa) {
+    if (cfg?.etapa) setAdminPasteEtapa(String(cfg.etapa));
+    if (!cfg || cfg.modo !== "real" || !cfg.etapa) {
       setGrupoEquipasHoje(new Set());
       return;
     }
     const etapaKey = cfg.etapa === "finals" ? "finals" : `etapa${cfg.etapa}`;
-    supabase.from("liga_data").select("data").eq("key", `${etapaKey}_grupos`).single()
-      .then(({ data: row }) => {
-        const equipas = row?.data?.[cfg.grupo] || [];
-        setGrupoEquipasHoje(new Set(equipas));
-      })
-      .catch(() => setGrupoEquipasHoje(new Set()));
+
+    if (cfg.fase === "grupos" && cfg.grupo) {
+      supabase.from("liga_data").select("data").eq("key", `${etapaKey}_grupos`).single()
+        .then(({ data: row }) => {
+          const equipas = row?.data?.[cfg.grupo] || [];
+          setGrupoEquipasHoje(new Set(equipas));
+        })
+        .catch(() => setGrupoEquipasHoje(new Set()));
+    } else if (cfg.fase === "eliminatorias") {
+      supabase.from("liga_data").select("data").eq("key", `${etapaKey}_qf`).single()
+        .then(({ data: row }) => {
+          const matches = row?.data || [];
+          const equipas = new Set();
+          for (const m of matches) {
+            if (m.teamA) equipas.add(m.teamA);
+            if (m.teamB) equipas.add(m.teamB);
+          }
+          setGrupoEquipasHoje(equipas);
+        })
+        .catch(() => setGrupoEquipasHoje(new Set()));
+    } else {
+      setGrupoEquipasHoje(new Set());
+    }
   }, [ligaConfig]);
 
   // uma carta é elegível se: caster OU sem restrição OU a sua equipa joga hoje
@@ -1427,9 +1445,12 @@ function App() {
   const lineupReady = lineupFull && !hasIneligible;
   const JORNADA_LIMIT = 10;
   const grupoAtual = ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos" ? ligaConfig.grupo : null;
+  const faseAtual = ligaConfig?.modo === "real" ? ligaConfig.fase : null;
   const jaJogouGrupoAtual = grupoAtual
     ? jHist.some((j) => j.etapa === ligaConfig?.etapa && j.grupo === grupoAtual && j.modo !== "simulacao_fallback")
-    : jHist.length >= JORNADA_LIMIT;
+    : faseAtual === "eliminatorias"
+      ? jHist.some((j) => j.etapa === ligaConfig?.etapa && j.fase === "eliminatorias" && j.modo !== "simulacao_fallback")
+      : jHist.length >= JORNADA_LIMIT;
   const simulateJornada = async () => {
     if (!lineupFull || captain === null) return;
     if (jaJogouGrupoAtual) {
@@ -1593,33 +1614,38 @@ function App() {
   const clearPrev = () => setPrev(EMPTY_PREV);
 
   // ---- Painel Admin: Liga ----
+  const [adminPasteText, setAdminPasteText] = useState("");
+  const [adminPasteEtapa, setAdminPasteEtapa] = useState(() => String(ligaConfig?.etapa ?? "1"));
   const adminSyncLiga = async () => {
     setAdminSyncing(true); setAdminSyncLog(null);
-    // o fetch directo falha por CORS — tentar vários proxies públicos
-    const targetUrl = "https://esports.ligaportugal.pt/resultados.php?c=6";
-    const proxies = [
-      `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
-      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
-    ];
-    let html = "";
-    for (const proxy of proxies) {
-      try {
-        const res = await fetch(proxy);
-        if (res.ok) {
-          const text = await res.text();
-          if (text.length > 5000 && text.includes("ELiga Portugal")) { html = text; break; }
-        }
-      } catch (e) { /* tentar próximo */ }
+    // usar texto colado se disponível, senão tentar proxy
+    let html = adminPasteText.trim();
+    if (!html) {
+      const targetUrl = "https://esports.ligaportugal.pt/resultados.php?c=6";
+      const proxies = [
+        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
+      ];
+      for (const proxy of proxies) {
+        try {
+          const res = await fetch(proxy);
+          if (res.ok) {
+            const text = await res.text();
+            if (text.length > 5000 && text.includes("ELiga Portugal")) { html = text; break; }
+          }
+        } catch (e) { /* tentar próximo */ }
+      }
     }
     if (!html) {
       setAdminSyncing(false);
-      setAdminSyncLog({ ok: false, error: "Não foi possível aceder ao site via proxy. Usa o SQL manual para inserir dados." });
+      setAdminSyncLog({ ok: false, error: "Sem dados para sincronizar. Cola o conteúdo da página abaixo ou tenta mais tarde." });
       return;
     }
-    const { data, message } = await invokeFn("sync-liga", { html }, "Erro ao sincronizar. Tenta novamente.");
+    const { data, message } = await invokeFn("sync-liga", { html, etapa: adminPasteEtapa }, "Erro ao sincronizar. Tenta novamente.");
     setAdminSyncing(false);
     if (message) { setAdminSyncLog({ ok: false, error: message }); return; }
     setAdminSyncLog({ ok: true, ...data });
+    setAdminPasteText("");
     try {
       const { data: cfgRow } = await supabase.from("liga_data").select("data").eq("key", "config").single();
       if (cfgRow?.data) setLigaConfig({ ...cfgRow.data, _ts: Date.now() });
@@ -1627,10 +1653,15 @@ function App() {
   };
   const adminSaveConfig = async (patch) => {
     setAdminConfigSaving(true);
+    setLigaConfig((prev) => ({ ...(prev || {}), ...patch }));
     const { data, message } = await invokeFn("admin-liga-config", patch, "Erro ao guardar configuração.");
+    console.log("[adminSaveConfig] patch=", patch, "data=", data, "message=", message);
     setAdminConfigSaving(false);
-    if (message) { setToast(message); setTimeout(() => setToast(null), 2600); return; }
-    setLigaConfig(data.config); // useEffect carrega grupoEquipas automaticamente
+    if (message) {
+      setLigaConfig((prev) => ({ ...(prev || {}), ...Object.fromEntries(Object.keys(patch).map((k) => [k, prev?.[k]])) }));
+      setToast(message); setTimeout(() => setToast(null), 2600); return;
+    }
+    setLigaConfig(data.config);
     setToast("Configuração guardada."); setTimeout(() => setToast(null), 1800);
   };
 
@@ -2061,14 +2092,24 @@ function App() {
               <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12, color: "#1BF5A3", letterSpacing: 1 }}>
                 {ligaConfig.etapa === "finals" ? "FINALS" : `ETAPA ${ligaConfig.etapa}`} · GRUPO {ligaConfig.grupo || "?"}
               </span>
-              <span style={{ fontSize: 12, color: "#6f87a8" }}>· 5 jornadas hoje</span>
+              <span style={{ fontSize: 12, color: "#6f87a8" }}>· 5 rondas hoje</span>
+            </div>
+          )}
+          {ligaConfig?.modo === "real" && ligaConfig?.fase === "eliminatorias" && (
+            <div style={{ marginTop: 10, display: "inline-flex", alignItems: "center", gap: 8, background: "#F2C14E14", border: "1px solid #F2C14E44", borderRadius: 99, padding: "6px 14px" }}>
+              <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12, color: "#F2C14E", letterSpacing: 1 }}>
+                {ligaConfig.etapa === "finals" ? "FINALS" : `ETAPA ${ligaConfig.etapa}`} · ELIMINATÓRIAS
+              </span>
+              <span style={{ fontSize: 12, color: "#6f87a8" }}>· QF · MF · Final</span>
             </div>
           )}
 
           {/* clubes que jogam hoje */}
           {grupoEquipasHoje.size > 0 && (
             <div style={{ marginTop: 14, background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "14px 18px" }}>
-              <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 2, color: "#39E6FF", marginBottom: 12 }}>EQUIPAS QUE JOGAM HOJE</div>
+              <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 2, color: "#39E6FF", marginBottom: 12 }}>
+                {ligaConfig?.fase === "eliminatorias" ? "EQUIPAS NOS QUARTOS DE FINAL" : "EQUIPAS QUE JOGAM HOJE"}
+              </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                 {[...grupoEquipasHoje].map((teamId) => {
                   const t = TEAMS.find((x) => x.id === teamId);
@@ -2150,13 +2191,15 @@ function App() {
             <button onClick={simulateJornada} disabled={!lineupReady || captain === null || jaJogouGrupoAtual}
               style={{ ...btn(lineupReady && captain !== null && !jaJogouGrupoAtual), opacity: lineupReady && captain !== null && !jaJogouGrupoAtual ? 1 : 0.35, cursor: lineupReady && captain !== null && !jaJogouGrupoAtual ? "pointer" : "not-allowed", fontSize: 14, padding: "14px 30px" }}>
               {jaJogouGrupoAtual
-                ? grupoAtual ? `✓ Grupo ${grupoAtual} jogado` : "Já jogaste todos os grupos"
+                ? grupoAtual ? `✓ Grupo ${grupoAtual} jogado` : faseAtual === "eliminatorias" ? "✓ Eliminatórias jogadas" : "Já jogaste todos os grupos"
                 : hasIneligible ? "Substitui as cartas inelegíveis"
                 : !lineupFull ? "Escolhe 3 cartas para jogar"
                 : captain === null ? "Escolhe um capitão (×2) primeiro"
                 : ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos"
                   ? `▶ Jogar ${ligaConfig.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig.etapa}`} · Grupo ${ligaConfig.grupo || "?"}`
-                  : `▶ Simular jornada ${jHist.length + 1}`}
+                  : ligaConfig?.modo === "real" && ligaConfig?.fase === "eliminatorias"
+                    ? `▶ Jogar Eliminatórias — ${ligaConfig.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig.etapa}`}`
+                    : `▶ Simular jornada ${jHist.length + 1}`}
             </button>
             {jaJogouGrupoAtual && grupoAtual && (
               <div style={{ color: "#1BF5A3", fontSize: 12, textAlign: "center", maxWidth: 360 }}>
@@ -2931,8 +2974,24 @@ function App() {
             <div style={card16}>
               {label("SINCRONIZAR DADOS DO SITE")}
               <p style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 14, lineHeight: 1.6 }}>
-                Faz scraping de <span style={{ color: "#39E6FF" }}>esports.ligaportugal.pt</span>, extrai grupos, jornadas e eliminatórias e guarda em <code style={{ color: "#F2C14E" }}>liga_data</code>. Podes sempre corrigir dados manualmente no Supabase Dashboard.
+                Faz scraping de <span style={{ color: "#39E6FF" }}>esports.ligaportugal.pt</span>, extrai grupos, rondas e eliminatórias e guarda em <code style={{ color: "#F2C14E" }}>liga_data</code>. Podes sempre corrigir dados manualmente no Supabase Dashboard.
               </p>
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: "#6f87a8", marginBottom: 6, letterSpacing: 1 }}>ALTERNATIVA — COLAR CONTEÚDO DA PÁGINA</div>
+                <div style={{ fontSize: 12, color: "#6f87a8", marginBottom: 8 }}>
+                  Se o sync automático falhar: abre <a href="https://esports.ligaportugal.pt/resultados.php?c=6" target="_blank" rel="noopener" style={{ color: "#39E6FF" }}>resultados.php?c=6</a> no browser, selecciona tudo (Ctrl+A), copia (Ctrl+C) e cola aqui.
+                </div>
+                <div style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "center" }}>
+                  <div style={{ fontSize: 11, color: "#6f87a8" }}>Etapa (para eliminatórias sem etapa no texto):</div>
+                  {sel(adminPasteEtapa, [["1","Etapa 1"],["2","Etapa 2"],["3","Etapa 3"],["finals","Finals"]], (v) => setAdminPasteEtapa(v))}
+                </div>
+                <textarea
+                  value={adminPasteText}
+                  onChange={(e) => setAdminPasteText(e.target.value)}
+                  placeholder="Cola aqui o conteúdo da página de resultados (opcional)..."
+                  style={{ width: "100%", minHeight: 80, background: "#060A16", color: "#8fa3bd", border: "1px solid #22304d", borderRadius: 8, padding: "10px 12px", fontFamily: "monospace", fontSize: 11, resize: "vertical", boxSizing: "border-box" }}
+                />
+              </div>
               <button onClick={adminSyncLiga} disabled={adminSyncing} style={{ ...btn(true), fontSize: 13 }}>
                 {adminSyncing ? "⏳ A sincronizar…" : "🔄 Sincronizar agora"}
               </button>

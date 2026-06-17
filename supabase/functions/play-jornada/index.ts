@@ -124,24 +124,24 @@ Deno.serve(async (req: Request) => {
     const etapaKey = config.etapa === "finals" ? "finals" : `etapa${config.etapa}`;
 
     if (config.fase === "grupos") {
-      // carregar grupos e as 5 jornadas em paralelo
-      const [gruposRes, ...jornadasRes] = await Promise.all([
+      // carregar as 5 rondas do grupo do dia
+      const grupoKey = config.grupo || "A";
+      const etapaKey = config.etapa === "finals" ? "finals" : `etapa${config.etapa}`;
+      const grupoLabel = `grupo${grupoKey}`;
+
+      const [gruposRes, ...rondasRes] = await Promise.all([
         admin.from("liga_data").select("data").eq("key", `${etapaKey}_grupos`).single(),
-        ...([1, 2, 3, 4, 5].map((j) => admin.from("liga_data").select("data").eq("key", `${etapaKey}_jornada${j}`).single())),
+        ...([1, 2, 3, 4, 5].map((r) =>
+          admin.from("liga_data").select("data").eq("key", `${etapaKey}_${grupoLabel}_ronda${r}`).single()
+        )),
       ]);
 
       const gruposData = gruposRes.data?.data as Record<string, string[]> | null;
-      const grupoEquipas = new Set<string>(config.grupo && gruposData?.[config.grupo] ? gruposData[config.grupo] : []);
+      const grupoEquipas = new Set<string>(gruposData?.[grupoKey] ?? []);
 
       let allMatches: RealMatch[] = [];
-      for (const r of jornadasRes) {
-        if (r.data?.data) {
-          const matches = r.data.data as RealMatch[];
-          const filtered = grupoEquipas.size > 0
-            ? matches.filter((m) => grupoEquipas.has(m.teamA) && grupoEquipas.has(m.teamB))
-            : matches;
-          allMatches = allMatches.concat(filtered);
-        }
+      for (const r of rondasRes) {
+        if (r.data?.data) allMatches = allMatches.concat(r.data.data as RealMatch[]);
       }
 
       if (allMatches.length === 0) {
@@ -180,10 +180,50 @@ Deno.serve(async (req: Request) => {
       total = rows.reduce((s, r) => s + r.subtotal, 0);
 
     } else {
-      // eliminatórias — fallback simulação por agora
-      modoUsado = "simulacao_fallback";
-      const result = scoreLineup(cards as NonNullable<typeof cards[number]>[], captain as number);
-      rows = result.rows; total = result.total;
+      // eliminatórias: carregar QF, MF e Final
+      const [qfRes, sfRes, finalRes] = await Promise.all([
+        admin.from("liga_data").select("data").eq("key", `${etapaKey}_qf`).single(),
+        admin.from("liga_data").select("data").eq("key", `${etapaKey}_sf`).single(),
+        admin.from("liga_data").select("data").eq("key", `${etapaKey}_final`).single(),
+      ]);
+
+      const allMatches: RealMatch[] = [
+        ...((qfRes.data?.data as RealMatch[]) ?? []),
+        ...((sfRes.data?.data as RealMatch[]) ?? []),
+        ...((finalRes.data?.data as RealMatch[]) ?? []),
+      ];
+
+      if (allMatches.length === 0) {
+        return jsonResponse({ error: "Dados das eliminatórias ainda não disponíveis. Contacta o admin para sincronizar." }, 400);
+      }
+
+      rows = (lineup as string[]).map((id, i) => {
+        const r = scoreRealCard(id, allMatches);
+        r.captain = i === captain;
+        return r;
+      });
+
+      // efeitos
+      for (const r of rows) {
+        const fx = r.fx;
+        if (fx.tipo === "artilheiro") r.bonus = r.perf.golos * fx.mag;
+        else if (fx.tipo === "vencedor") r.bonus = r.perf.vit * fx.mag;
+        else if (fx.tipo === "consistente") r.bonus = Math.round((r.base * fx.mag) / 100);
+        else if (fx.tipo === "imparavel") r.bonus = r.perf.vit >= 2 ? fx.mag : 0;
+        else if (fx.tipo === "resiliente") r.bonus = r.perf.der * fx.mag;
+        else if (fx.tipo === "vozdaliga") r.bonus = fx.mag;
+        r.subtotal = r.base + r.bonus;
+      }
+      for (const r of rows) {
+        const fx = r.fx;
+        const card = JORNADA_CARDS.find((c) => c.id === r.cardId)!;
+        if (fx.tipo === "clube") rows.forEach((o) => { if (o !== r && JORNADA_CARDS.find((c) => c.id === o.cardId)?.team === card.team) o.synergy += Math.round(((o.base + o.bonus) * fx.mag) / 100); });
+        if (fx.tipo === "mentor") rows.forEach((o) => { if (o !== r) o.synergy += fx.mag; });
+        if (fx.tipo === "hype") { const cap = rows.find((o) => o.captain); if (cap && cap !== r) cap.synergy += Math.round(((cap.base + cap.bonus) * fx.mag) / 100); }
+        if (fx.tipo === "analista") { const emps = rows.reduce((s, o) => s + o.perf.emp, 0); r.synergy += emps * fx.mag; }
+      }
+      rows.forEach((r) => { r.subtotal = (r.base + r.bonus + r.synergy) * (r.captain ? 2 : 1); });
+      total = rows.reduce((s, r) => s + r.subtotal, 0);
     }
   } else {
     const result = scoreLineup(cards as NonNullable<typeof cards[number]>[], captain as number);
@@ -201,8 +241,10 @@ Deno.serve(async (req: Request) => {
   jHist.unshift({
     j: jornadaNum, t: Date.now(), total, modo: modoUsado,
     etapa: config.etapa, fase: config.fase, grupo: config.grupo,
-    label: config.modo === "real" && config.fase === "grupos"
-      ? `${config.etapa === "finals" ? "Finals" : `Etapa ${config.etapa}`} · Grupo ${config.grupo}`
+    label: config.modo === "real"
+      ? config.fase === "grupos"
+        ? `${config.etapa === "finals" ? "Finals" : `Etapa ${config.etapa}`} · Grupo ${config.grupo}`
+        : `${config.etapa === "finals" ? "Finals" : `Etapa ${config.etapa}`} · Eliminatórias`
       : `Jornada ${jornadaNum}`,
     cards: (cards as NonNullable<typeof cards[number]>[]).map((c) => c.name),
     cap: capCard.name, capRarity: capCard.rarity,
