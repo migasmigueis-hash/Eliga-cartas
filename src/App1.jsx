@@ -1153,8 +1153,6 @@ function App() {
   const [adminSyncLog, setAdminSyncLog] = useState(null); // resultado do último sync
   const [adminSyncing, setAdminSyncing] = useState(false);
   const [adminConfigSaving, setAdminConfigSaving] = useState(false);
-  const [adminAvalLog, setAdminAvalLog] = useState(null); // resultado da última avaliação de previsões
-  const [adminAvaliando, setAdminAvaliando] = useState(false);
   const [adminProximaFaseAtivo, setAdminProximaFaseAtivo] = useState(false);
 
   // ordem das fases: etapa1 A/B/C/elim → etapa2 A/B/C/elim → etapa3 A/B/C/elim → finals
@@ -1742,30 +1740,6 @@ function App() {
   };
 
   // admin: reinicia o ranking partilhado e o histórico "As tuas jornadas" de TODOS os jogadores
-  // Avaliação de previsões: um único botão que deteta sozinho (no servidor) se há
-  // grupos por revelar (Avaliar #1) ou eliminatórias por validar (Avaliar #2).
-  const adminAvaliarPrevisoes = async () => {
-    setAdminAvaliando(true);
-    setAdminAvalLog(null);
-    const { data, message } = await invokeFn("previsoes-avaliar", {}, "Não foi possível avaliar as previsões.");
-    setAdminAvaliando(false);
-    if (message) {
-      setAdminAvalLog({ ok: false, error: message });
-      setToast(message); setTimeout(() => setToast(null), 3200);
-      return;
-    }
-    setAdminAvalLog({ ok: true, ...data });
-    const txt = data.mode === "grupos"
-      ? `🔓 Grupos revelados: ${data.revealed} jogador(es) pontuado(s) nos apurados.`
-      : `🏆 Eliminatórias validadas: ${data.resolved} previsão(ões) pontuada(s).`;
-    setToast(txt); setTimeout(() => setToast(null), 4000);
-    // refrescar o próprio progresso (admin também pode ter previsão)
-    try {
-      const { data: prof } = await supabase.from("profiles").select("state").eq("id", userId).single();
-      if (prof?.state?.prev) setPrev(prof.state.prev);
-    } catch (e) { /* ignora */ }
-  };
-
   const adminResetRanking = async () => {
     setJHist([]);
     try {
@@ -1912,7 +1886,6 @@ function App() {
         @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
         @keyframes tear { 0% { transform: translateY(0) rotate(0); opacity: 1; } 100% { transform: translateY(-160px) rotate(-14deg); opacity: 0; } }
         @keyframes pop { 0% { transform: scale(0.7) translateY(30px); opacity: 0; } 100% { transform: scale(1) translateY(0); opacity: 1; } }
-        @keyframes popcenter { 0% { transform: translateX(-50%) scale(0.7) translateY(30px); opacity: 0; } 100% { transform: translateX(-50%) scale(1) translateY(0); opacity: 1; } }
         @keyframes confetti { 0% { transform: translate(0,0) rotate(0); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) rotate(var(--rot)); opacity: 0; } }
         @keyframes shakeK { 0%,100% { transform: translate(0,0); } 20% { transform: translate(-6px,4px); } 40% { transform: translate(6px,-4px); } 60% { transform: translate(-4px,-3px); } 80% { transform: translate(4px,3px); } }
         .shake { animation: shakeK 450ms ease-in-out; }
@@ -2324,7 +2297,25 @@ function App() {
                 <span style={{ fontSize: 11, letterSpacing: 1, color: "#6f87a8", fontFamily: FONT }}>JÁ JOGASTE {jHist.length} JORNADA{jHist.length === 1 ? "" : "S"}</span>
               </div>
               {isAdmin && (
-                <button onClick={adminResetRanking} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Limpar jornadas (todos) e ranking (admin)</button>
+                <>
+                  <button onClick={adminResetRanking} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Limpar jornadas (todos) e ranking (admin)</button>
+                  <button onClick={async () => {
+                    const { data, message } = await invokeFn("previsoes-revelar-grupos", {}, "Erro ao revelar grupos.");
+                    if (message) { setToast(message); setTimeout(() => setToast(null), 3000); }
+                    else setToast(`🔓 Grupos revelados: ${data.revealed} jogadores pontuados nos apurados.`);
+                    setTimeout(() => setToast(null), 4000);
+                  }} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #39E6FF88", color: "#39E6FF" }}>
+                    🔓 Revelar grupos & pontuar apurados (admin)
+                  </button>
+                  <button onClick={async () => {
+                    const { data, message } = await invokeFn("previsoes-validar-todos", {}, "Erro ao validar previsões.");
+                    if (message) { setToast(message); setTimeout(() => setToast(null), 3000); }
+                    else setToast(`✓ Previsões validadas: ${data.resolved} resolvidas, ${data.skipped} sem previsão completa.`);
+                    setTimeout(() => setToast(null), 4000);
+                  }} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #F2C14E88", color: "#F2C14E" }}>
+                    🏆 Validar previsões de todos (admin)
+                  </button>
+                </>
               )}
             </div>
             {Object.keys(rank.scores).length === 0 ? (
@@ -3220,39 +3211,6 @@ function App() {
               </div>
             </div>
 
-            {/* AVALIAÇÃO DE PREVISÕES */}
-            <div style={card16}>
-              {label("AVALIAÇÃO DE PREVISÕES")}
-              <p style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 14, lineHeight: 1.6 }}>
-                Um só botão, em dois momentos. O servidor deteta automaticamente o que avaliar:
-                <br />• <b style={{ color: "#39E6FF" }}>Fase de grupos</b> — depois de inserires o bracket real (QF) da etapa: revela os apurados e pontua-os. A bracket fica disponível para os jogadores preverem a eliminatória.
-                <br />• <b style={{ color: "#F2C14E" }}>Eliminatória</b> — depois de inserires os resultados (QF, MF e Final com golos): pontua as previsões das eliminatórias.
-              </p>
-              <button onClick={adminAvaliarPrevisoes} disabled={adminAvaliando} style={{ ...btn(true), fontSize: 13, opacity: adminAvaliando ? 0.6 : 1 }}>
-                {adminAvaliando ? "⏳ A avaliar…" : "⚖ Avaliar previsões"}
-              </button>
-              {adminAvalLog && (
-                <div style={{ marginTop: 16, background: "#060A16", border: `1px solid ${adminAvalLog.ok ? "#1BF5A344" : "#ff7b8a44"}`, borderRadius: 12, padding: "14px 16px", fontSize: 12 }}>
-                  {adminAvalLog.ok ? (
-                    <div style={{ color: "#8fa3bd", lineHeight: 1.8 }}>
-                      <div style={{ color: adminAvalLog.mode === "grupos" ? "#39E6FF" : "#F2C14E", fontFamily: FONT, fontWeight: 700, marginBottom: 6 }}>
-                        {adminAvalLog.mode === "grupos" ? "🔓 Fase de grupos revelada" : "🏆 Eliminatórias validadas"}
-                      </div>
-                      {adminAvalLog.mode === "grupos" ? (
-                        <>Jogadores pontuados nos apurados: <b style={{ color: "#fff" }}>{adminAvalLog.revealed}</b><br />
-                        Ignorados (sem previsão fechada): <b style={{ color: "#fff" }}>{adminAvalLog.skipped}</b></>
-                      ) : (
-                        <>Previsões pontuadas: <b style={{ color: "#fff" }}>{adminAvalLog.resolved}</b><br />
-                        Ignoradas (sem previsão completa): <b style={{ color: "#fff" }}>{adminAvalLog.skipped}</b></>
-                      )}
-                    </div>
-                  ) : (
-                    <div style={{ color: "#ff7b8a" }}>✗ {adminAvalLog.error}</div>
-                  )}
-                </div>
-              )}
-            </div>
-
             {/* SYNC */}
             <div style={card16}>
               {label("SINCRONIZAR DADOS DO SITE")}
@@ -3359,7 +3317,7 @@ function App() {
       )}
 
       {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 70, background: "#0E162E", border: "1px solid #1BF5A366", borderRadius: 99, padding: "10px 22px", fontFamily: FONT, fontSize: 13, color: "#1BF5A3", boxShadow: "0 10px 30px rgba(0,0,0,0.5)", animation: "popcenter 250ms ease-out", maxWidth: "90vw", textAlign: "center" }}>{toast}</div>
+        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 70, background: "#0E162E", border: "1px solid #1BF5A366", borderRadius: 99, padding: "10px 22px", fontFamily: FONT, fontSize: 13, color: "#1BF5A3", boxShadow: "0 10px 30px rgba(0,0,0,0.5)", animation: "pop 250ms ease-out", maxWidth: "90vw", textAlign: "center" }}>{toast}</div>
       )}
 
       <footer style={{ textAlign: "center", padding: "20px 0 30px", fontSize: 11, color: "#44557a" }}>

@@ -91,12 +91,10 @@ function parseContent(content: string): { byLabel: Map<string, MatchResult[]>; w
 
   const SCORE_RE = /^(\d+)\s*-\s*(\d+)$/;
   const LABEL_RE = /^ELiga Portugal 25\/26 \|[\s\t]*(.+)$/;
-  // uma linha é nome de equipa se existir no mapa
   const isTeam = (s: string) => !!TEAM_NAME_MAP[s.trim().replace(/\s+/g, " ")];
-  // uma linha é nome de jogador se existir no mapa
   const isPlayer = (s: string) => !!PLAYER_NAME_MAP[s.trim()];
-  // uma linha é ##### Equipa (HTML) ou só o nome da equipa (plain text)
   const TEAM_HEADER_RE = /^#{3,5}\s+(.+)$/;
+  const VS_RE = /^(.+?)\s+vs\s+(.+)$/i;
 
   let i = 0;
   while (i < lines.length) {
@@ -105,6 +103,21 @@ function parseContent(content: string): { byLabel: Map<string, MatchResult[]>; w
     const label = labelM[1].replace(/[\t]+/g, " ").trim();
     i++;
 
+    // formato "TeamA vs TeamB" (bracket sem resultados)
+    if (i < lines.length && lines[i].match(VS_RE) && !lines[i].match(LABEL_RE)) {
+      while (i < lines.length && !lines[i].match(LABEL_RE)) {
+        const vm = lines[i].match(VS_RE);
+        if (vm) {
+          const ta = mapTeam(vm[1].trim()); const tb = mapTeam(vm[2].trim());
+          if (ta.warn) warnings.push(ta.warn); if (tb.warn) warnings.push(tb.warn);
+          if (!byLabel.has(label)) byLabel.set(label, []);
+          byLabel.get(label)!.push({ teamA: ta.id, playerA: "", golosA: -1, teamB: tb.id, playerB: "", golosB: -1 });
+        }
+        i++;
+      }
+      continue;
+    }
+
     // teamA: linha com ##### ou nome de equipa directo
     while (i < lines.length && !lines[i].match(LABEL_RE) && !isTeam(lines[i]) && !lines[i].match(TEAM_HEADER_RE)) i++;
     if (i >= lines.length || lines[i].match(LABEL_RE)) continue;
@@ -112,6 +125,25 @@ function parseContent(content: string): { byLabel: Map<string, MatchResult[]>; w
     const teamAName = teamAM ? teamAM[1].trim() : lines[i].trim(); i++;
     // saltar duplicado (nome de equipa pode aparecer 2x — alt + h5)
     if (i < lines.length && (lines[i].trim() === teamAName || lines[i].trim() === teamAName.replace(/\s*\|.*/, "").trim())) i++;
+
+    // verificar se o próximo elemento com conteúdo relevante é um score ou outra equipa
+    // se for outra equipa (sem score), é um bracket sem resultados
+    let peekIdx = i;
+    while (peekIdx < lines.length && !lines[peekIdx].match(SCORE_RE) && !lines[peekIdx].match(LABEL_RE) && !isTeam(lines[peekIdx]) && !lines[peekIdx].match(TEAM_HEADER_RE)) peekIdx++;
+    const nextIsTeamNotScore = peekIdx < lines.length && !lines[peekIdx].match(SCORE_RE) && (isTeam(lines[peekIdx]) || lines[peekIdx].match(TEAM_HEADER_RE));
+
+    if (nextIsTeamNotScore) {
+      // bracket sem resultado — ler teamB e guardar sem scores
+      i = peekIdx;
+      const teamBM2 = lines[i].match(TEAM_HEADER_RE);
+      const teamBName2 = teamBM2 ? teamBM2[1].trim() : lines[i].trim(); i++;
+      if (i < lines.length && (lines[i].trim() === teamBName2 || lines[i].trim() === teamBName2.replace(/\s*\|.*/, "").trim())) i++;
+      const ta2 = mapTeam(teamAName); const tb2 = mapTeam(teamBName2);
+      if (ta2.warn) warnings.push(ta2.warn); if (tb2.warn) warnings.push(tb2.warn);
+      if (!byLabel.has(label)) byLabel.set(label, []);
+      byLabel.get(label)!.push({ teamA: ta2.id, playerA: "", golosA: -1, teamB: tb2.id, playerB: "", golosB: -1 });
+      continue;
+    }
 
     // score global (próxima linha com N - N)
     while (i < lines.length && !lines[i].match(SCORE_RE) && !lines[i].match(LABEL_RE) && !isTeam(lines[i])) i++;
@@ -258,9 +290,20 @@ Deno.serve(async (req: Request) => {
       knockoutMatches["finals_jogos"] ??= [];
       knockoutMatches["finals_jogos"].push(...matches); continue;
     }
+    // "Etapa N | Bracket" — confrontos sem resultados (só equipas) para abrir previsões antes dos jogos
+    const bracketM = label.match(/Etapa\s+(\d+)\s*\|\s*Bracket/i);
+    if (bracketM) {
+      knockoutMatches[`etapa${bracketM[1]}_bracket`] ??= [];
+      knockoutMatches[`etapa${bracketM[1]}_bracket`].push(...matches); continue;
+    }
     const etapaM = label.match(/Etapa\s+(\d+)/i);
     const etapaKey = etapaM ? `etapa${etapaM[1]}` : (etapaContexto ?? "etapa1");
-    if (/Quartos/i.test(label)) { knockoutMatches[`${etapaKey}_qf`] ??= []; knockoutMatches[`${etapaKey}_qf`].push(...matches); }
+    if (/Quartos/i.test(label)) {
+      // se os jogos não têm scores (golosA === -1), é um bracket sem resultados
+      const isBracketOnly = matches.every((m) => m.golosA === -1);
+      const key = isBracketOnly ? `${etapaKey}_bracket` : `${etapaKey}_qf`;
+      knockoutMatches[key] ??= []; knockoutMatches[key].push(...matches);
+    }
     else if (/Meias/i.test(label)) { knockoutMatches[`${etapaKey}_sf`] ??= []; knockoutMatches[`${etapaKey}_sf`].push(...matches); }
     // usar regex estrito para "Final" — não apanhar "Finals"
     else if (/\bFinal\b/i.test(label) && !/\bFinals\b/i.test(label) && !/Meias/i.test(label)) { knockoutMatches[`${etapaKey}_final`] ??= []; knockoutMatches[`${etapaKey}_final`].push(...matches); }
