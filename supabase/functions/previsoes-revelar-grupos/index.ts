@@ -1,21 +1,6 @@
-// supabase/functions/previsoes-revelar-grupos/index.ts  (NOVA)
-//
-// MOMENTO de admin #1 ("Avaliar" depois de terminada a fase de grupos).
-//
-// O que faz, para TODOS os utilizadores que fecharam a previsão dos apurados
-// (groupResult.locked === true):
-//   1. Lê o bracket REAL das eliminatórias da etapa (as 8 equipas que passaram),
-//      a partir de liga_data: etapaN_qf (ou etapaN_bracket como fallback).
-//   2. Pontua os apurados de cada jogador: qualHits = |qual ∩ 8 reais|.
-//   3. Revela: groupResult = { realQual:[8], qualHits } (deixa de estar locked)
-//      e popula prev.bracket com as 8 equipas na ordem dos confrontos QF reais.
-//   4. Limpa qf/sf/fin para o jogador poder agora prever a eliminatória.
-//
-// NÃO calcula vencedores nem score final aqui — isso é o "Avaliar #2"
-// (previsoes-validar-todos), depois de a eliminatória ser jogada.
-//
-// Pré-requisito do admin: ter avançado a fase para "eliminatorias" e inserido o
-// bracket real em etapaN_qf.
+// supabase/functions/previsoes-revelar-grupos/index.ts  (legado — o cliente usa previsoes-avaliar)
+// Avaliar #1: revela apurados (qualHits) e popula a bracket real para todos os
+// jogadores com a previsão de grupos fechada.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -39,20 +24,14 @@ Deno.serve(async (req: Request) => {
 
   const { data: configRow } = await admin.from("liga_data").select("data").eq("key", "config").single();
   const config = (configRow?.data ?? { etapa: 1 }) as { etapa: number | string };
-  if (config.etapa === "finals") {
-    return jsonResponse({ error: "As Finals não têm fase de grupos para revelar." }, 400);
-  }
+  if (config.etapa === "finals") return jsonResponse({ error: "As Finals não têm fase de grupos para revelar." }, 400);
   const etapaKey = `etapa${config.etapa}`;
 
-  // bracket real: 8 equipas na ordem dos confrontos QF
   let bracket: string[] = [];
   for (const key of [`${etapaKey}_qf`, `${etapaKey}_bracket`]) {
     const { data: row } = await admin.from("liga_data").select("data").eq("key", key).maybeSingle();
     const jogos = (row?.data ?? []) as { teamA: string; teamB: string }[];
-    if (Array.isArray(jogos) && jogos.length >= 4) {
-      bracket = jogos.slice(0, 4).flatMap((m) => [m.teamA, m.teamB]);
-      break;
-    }
+    if (Array.isArray(jogos) && jogos.length >= 4) { bracket = jogos.slice(0, 4).flatMap((m) => [m.teamA, m.teamB]); break; }
   }
   if (bracket.length !== 8) {
     return jsonResponse({ error: `Bracket das eliminatórias incompleto para a Etapa ${config.etapa}. Insere os 4 confrontos QF em ${etapaKey}_qf primeiro.` }, 400);
@@ -66,15 +45,10 @@ Deno.serve(async (req: Request) => {
     const state = (profile.state ?? {}) as Record<string, unknown>;
     const prev = (state.prev ?? {}) as Record<string, unknown>;
     const gr = (prev.groupResult ?? null) as Record<string, unknown> | null;
-
-    // só revelar quem fechou os apurados e ainda está locked
-    if (!gr || gr.locked !== true || !Array.isArray(prev.qual) || (prev.qual as unknown[]).length !== 8) {
-      skipped++; continue;
-    }
+    if (!gr || gr.locked !== true || !Array.isArray(prev.qual) || (prev.qual as unknown[]).length !== 8) { skipped++; continue; }
 
     const qualArr = prev.qual as string[];
     const qualHits = qualArr.filter((id) => realQual.includes(id)).length;
-
     const newPrev = {
       ...prev,
       groupResult: { realQual, qualHits },

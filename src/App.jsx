@@ -183,7 +183,7 @@ const cardIdentity = (c) => {
 /* ---------- Escolhas (estilo Wonder Pick): conjunto global de 5 cartas que
    renova de 6 em 6 horas; gasta 1 Escolha para virar, baralhar e escolher às cegas */
 const PICK_SLOT_MS = 6 * 3600 * 1000;
-const EMPTY_PREV = { groups: null, qual: [], groupResult: null, bracket: null, qf: [null, null, null, null], sf: [null, null], fin: null, resolved: null, rewardClaimed: false };
+const EMPTY_PREV = { groups: null, qual: [], groupResult: null, bracket: null, qf: [null, null, null, null], sf: [null, null], fin: null, resolved: null, rewardClaimed: false, groupReward: null, groupRewardClaimed: false };
 function mulberry32(a) {
   return function () {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -1209,6 +1209,7 @@ function App() {
   const [vitrinePick, setVitrinePick] = useState(null);
   const [directTrade, setDirectTrade] = useState(null);
   const [prev, setPrev] = useState(EMPTY_PREV);
+  const [prevHist, setPrevHist] = useState([]); // histórico de previsões por etapa (pontos por fase)
   const [escolhas, setEscolhas] = useState(0);
   const [escSlot, setEscSlot] = useState(null);
   const [picksUsed, setPicksUsed] = useState({});
@@ -1318,6 +1319,7 @@ function App() {
       setJHist(st.jHist || []);
       setVitrine(st.vitrine || [null, null, null]);
       setPrev(st.prev && st.prev.groupResult !== undefined ? st.prev : EMPTY_PREV);
+      setPrevHist(Array.isArray(st.prevHist) ? st.prevHist : []);
       setMuted(!!st.muted);
       if (!st.onboardDone) setOnboardStep(0);
 
@@ -1337,6 +1339,7 @@ function App() {
       escSlot,
       picksUsed,
       jHist: jHist.slice(0, 30),
+      prevHist: prevHist.slice(0, 30),
       vitrine,
       prev,
       muted,
@@ -1347,7 +1350,7 @@ function App() {
         .then(({ error }) => { if (error) console.error("Erro ao guardar progresso:", error.message); });
     }, 600);
     return () => clearTimeout(t);
-  }, [collection, meta, lineup, captain, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, muted, onboardStep, username, userId]);
+  }, [collection, meta, lineup, captain, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, prevHist, muted, onboardStep, username, userId]);
 
 
   const linkTwitch = async () => {
@@ -1361,7 +1364,7 @@ function App() {
 
   const logout = async () => {
     await supabase.auth.signOut();
-    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
+    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
   const addCards = (cards) => setCollection((prev) => {
@@ -1505,6 +1508,27 @@ function App() {
   const hasIneligible = lineupIneligible.some(Boolean);
   const lineupReady = lineupFull && !hasIneligible;
   const JORNADA_LIMIT = 10; // só usado em modo simulação
+
+  // ---- prazos das previsões (definidos pelo admin em liga_data.config) ----
+  // depois do prazo, o jogador não pode mudar nem submeter a previsão dessa fase.
+  const prazoGruposMs = ligaConfig?.prazoGrupos ? new Date(ligaConfig.prazoGrupos).getTime() : null;
+  const prazoElimMs = ligaConfig?.prazoElim ? new Date(ligaConfig.prazoElim).getTime() : null;
+  const grupoExpirado = ligaConfig?.modo === "real" && prazoGruposMs != null && !isNaN(prazoGruposMs) && now > prazoGruposMs;
+  const elimExpirado = ligaConfig?.modo === "real" && prazoElimMs != null && !isNaN(prazoElimMs) && now > prazoElimMs;
+  const fmtPrazo = (ms) => {
+    if (ms == null || isNaN(ms)) return "";
+    const d = new Date(ms);
+    return d.toLocaleString("pt-PT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  };
+  // tempo restante legível (ex.: "2d 4h", "3h 12m", "8m")
+  const fmtRestante = (ms) => {
+    const diff = ms - now;
+    if (diff <= 0) return "terminado";
+    const d = Math.floor(diff / 86400000), h = Math.floor((diff % 86400000) / 3600000), m = Math.floor((diff % 3600000) / 60000);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+    return `${m}m`;
+  };
   const grupoAtual = ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos" ? ligaConfig.grupo : null;
   const faseAtual = ligaConfig?.modo === "real" ? ligaConfig.fase : null;
   const etapaAtual = ligaConfig?.etapa === "finals" ? "finals" : parseInt(ligaConfig?.etapa);
@@ -1638,7 +1662,7 @@ function App() {
     setPrev(data.prev);
   };
   const toggleQual = (id, gi) => {
-    if (prev.resolved || prev.groupResult) return;
+    if (prev.resolved || prev.groupResult || grupoExpirado) return;
     setPrev((p) => {
       if (p.qual.includes(id)) return { ...p, qual: p.qual.filter((x) => x !== id) };
       const inGroup = p.groups[gi].filter((x) => p.qual.includes(x)).length;
@@ -1648,6 +1672,7 @@ function App() {
   };
   const simulateGroups = async () => {
     if (prev.resolved || prev.groupResult || prev.qual.length !== 8) return;
+    if (grupoExpirado) { setToast("O prazo para fechar a previsão dos apurados já terminou."); setTimeout(() => setToast(null), 2800); return; }
     const { data, message } = await invokeFn("previsoes-simular-grupos", { qual: prev.qual }, "Não foi possível simular a fase de grupos. Tenta novamente.");
     if (message) { setToast(message); setTimeout(() => setToast(null), 2600); return; }
     setPrev(data.prev);
@@ -1655,14 +1680,15 @@ function App() {
   };
   // limpa as escolhas das eliminatórias em curso (a bracket em si vem fixa do servidor)
   const redoBracket = () => {
-    if (prev.resolved) return;
+    if (prev.resolved || elimExpirado) return;
     setPrev((p) => ({ ...p, qf: [null, null, null, null], sf: [null, null], fin: null }));
   };
-  const pickQF = (i, id) => { if (prev.resolved) return; setPrev((p) => ({ ...p, qf: p.qf.map((w, ix) => (ix === i ? id : w)), sf: [null, null], fin: null })); };
-  const pickSF = (i, id) => { if (prev.resolved) return; setPrev((p) => ({ ...p, sf: p.sf.map((w, ix) => (ix === i ? id : w)), fin: null })); };
-  const pickFin = (id) => { if (prev.resolved) return; setPrev((p) => ({ ...p, fin: id })); };
+  const pickQF = (i, id) => { if (prev.resolved || elimExpirado) return; setPrev((p) => ({ ...p, qf: p.qf.map((w, ix) => (ix === i ? id : w)), sf: [null, null], fin: null })); };
+  const pickSF = (i, id) => { if (prev.resolved || elimExpirado) return; setPrev((p) => ({ ...p, sf: p.sf.map((w, ix) => (ix === i ? id : w)), fin: null })); };
+  const pickFin = (id) => { if (prev.resolved || elimExpirado) return; setPrev((p) => ({ ...p, fin: id })); };
   const resolvePrev = async () => {
     if (!prev.fin || prev.resolved || prev.bracketLocked || !prev.bracket) return;
+    if (elimExpirado) { setToast("O prazo para fechar a previsão das eliminatórias já terminou."); setTimeout(() => setToast(null), 2800); return; }
     const { data, message } = await invokeFn("previsoes-resolver", { qf: prev.qf, sf: prev.sf, fin: prev.fin }, "Não foi possível fechar as eliminatórias. Tenta novamente.");
     if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
     setPrev(data.prev);
@@ -1680,7 +1706,48 @@ function App() {
     const ok = await openPack(PACKS.find((pk) => pk.id === prev.resolved.rewardPack) || PACKS[0], null, { prevReward: true });
     if (!ok) setPrev((p) => ({ ...p, rewardClaimed: false }));
   };
+  const claimGroupReward = async () => {
+    if (!prev.groupReward || !prev.groupReward.pack || prev.groupRewardClaimed) return;
+    const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
+    const { data, message } = await invokeFn("previsoes-abrir-pack-grupos", {}, "Não foi possível abrir o pack. Tenta novamente.");
+    if (message) { setToast(message); setTimeout(() => setToast(null), 2600); return; }
+    setPrev((p) => ({ ...p, groupRewardClaimed: true }));
+    const cards = data.cardIds.map((id) => POOL.find((c) => c.id === id)).filter(Boolean);
+    setCollection(data.collection); setMeta(data.meta); setHist(data.hist);
+    const pack = PACKS.find((pk) => pk.id === prev.groupReward.pack) || PACKS[0];
+    setOpening({ pack, cards, ownedBefore, initialPhase: "pack", again: null });
+  };
+  // reabrir previsão (já fechada/🔒) para alterar e voltar a submeter — só antes do prazo
+  const unlockGroups = async () => {
+    if (grupoExpirado) { setToast("O prazo já terminou — não podes alterar."); setTimeout(() => setToast(null), 2600); return; }
+    const { data, message } = await invokeFn("previsoes-desbloquear", { fase: "grupos" }, "Não foi possível reabrir a previsão.");
+    if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
+    setPrev(data.prev); playFx("flip", muted);
+  };
+  const unlockBracket = async () => {
+    if (elimExpirado) { setToast("O prazo já terminou — não podes alterar."); setTimeout(() => setToast(null), 2600); return; }
+    const { data, message } = await invokeFn("previsoes-desbloquear", { fase: "elim" }, "Não foi possível reabrir a previsão.");
+    if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
+    setPrev(data.prev); playFx("flip", muted);
+  };
   const clearPrev = () => setPrev(EMPTY_PREV);
+  // começar uma nova previsão: limpa a anterior e carrega já a da etapa/fase atual
+  const novaPrevisao = async () => {
+    setPrev(EMPTY_PREV);
+    const { data, message } = await invokeFn("previsoes-iniciar", {}, "Não foi possível carregar a nova previsão.");
+    if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
+    if (data?.prev) setPrev(data.prev);
+    playFx("flip", muted);
+  };
+  const refreshRanking = async () => {
+    const { data: lb } = await supabase.from("leaderboard").select("username, score, jornadas").order("score", { ascending: false });
+    if (lb) { const scores = {}, jm = {}; lb.forEach((r) => { scores[r.username] = r.score; jm[r.username] = r.jornadas; }); setRank({ scores, jornadas: jm }); }
+  };
+  // deteção automática de NOVA etapa/fase. O servidor carimba prev.cfgRef
+  // ("<etapa>-<fase>") quando a previsão é criada/revelada. Se o config atual
+  // diferir, há uma nova etapa disponível.
+  const cfgKeyAtual = ligaConfig ? `${ligaConfig.etapa}-${ligaConfig.fase}` : null;
+  const novaEtapaDisponivel = !!(prev.resolved && cfgKeyAtual && prev.cfgRef && prev.cfgRef !== cfgKeyAtual);
 
   // ---- Painel Admin: Liga ----
   const adminPasteTextareaRef = useRef(null);
@@ -1763,6 +1830,7 @@ function App() {
     try {
       const { data: prof } = await supabase.from("profiles").select("state").eq("id", userId).single();
       if (prof?.state?.prev) setPrev(prof.state.prev);
+      if (Array.isArray(prof?.state?.prevHist)) setPrevHist(prof.state.prevHist);
     } catch (e) { /* ignora */ }
   };
 
@@ -1861,6 +1929,9 @@ function App() {
     }
   }, [pickSlotNow, escSlot, username]);
 
+  // atualizar o ranking ao abrir a tab Ranking
+  useEffect(() => { if (tab === "ranking" && username) refreshRanking(); }, [tab, username]);
+
   // ---- indicadores e ferramentas de admin ----
   const tradeReady = ["comum", "rara", "epica"].some((r) => duplicatesOf(r) >= TRADE_COST);
   const [toast, setToast] = useState(null);
@@ -1955,6 +2026,7 @@ function App() {
             { k: "trocas", label: "Trocas", dot: tradeReady },
             { k: "escolhas", label: "Escolhas", dot: anyBoardFree },
             { k: "previsoes", label: "Previsões" },
+            { k: "ranking", label: "Ranking" },
             { k: "objetivos", label: "Objetivos", dot: claimableCount > 0 },
             { k: "colecao", label: `Coleção · ${ownedCount}/${POOL.length}` },
             { k: "perfil", label: "Perfil" },
@@ -2299,7 +2371,7 @@ function App() {
                 : !lineupFull ? "Escolhe 3 cartas para jogar"
                 : captain === null ? "Escolhe um capitão (×2) primeiro"
                 : ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos"
-                  ? `▶ Jogar ${ligaConfig.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig.etapa}`} · Grupo ${ligaConfig.grupo || "?"}`
+                  ? `▶ Jogar ${ligaConfig.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig.etapa}`} · Grupo ${ligaConfig.grupo || "A"}`
                   : ligaConfig?.modo === "real" && ligaConfig?.fase === "eliminatorias"
                     ? `▶ Jogar Eliminatórias — ${ligaConfig.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig.etapa}`}`
                     : `▶ Simular jornada ${jHist.length + 1}`}
@@ -2316,65 +2388,47 @@ function App() {
             )}
           </div>
 
-          {/* ranking */}
-          <div style={{ marginTop: 44 }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14, flexWrap: "wrap", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-                <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, margin: 0, color: "#fff" }}>Ranking</h2>
-                <span style={{ fontSize: 11, letterSpacing: 1, color: "#6f87a8", fontFamily: FONT }}>JÁ JOGASTE {jHist.length} JORNADA{jHist.length === 1 ? "" : "S"}</span>
-              </div>
-              {isAdmin && (
-                <button onClick={adminResetRanking} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Limpar jornadas (todos) e ranking (admin)</button>
-              )}
+          {/* admin: reset (o ranking completo está agora na tab Ranking) */}
+          {isAdmin && (
+            <div style={{ marginTop: 28, textAlign: "right" }}>
+              <button onClick={adminResetRanking} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Limpar jornadas (todos) e ranking (admin)</button>
             </div>
-            {Object.keys(rank.scores).length === 0 ? (
-              <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "24px 20px", textAlign: "center", color: "#6f87a8", fontSize: 13 }}>
-                O ranking começa quando a primeira jornada for disputada.
-              </div>
-            ) : (
-              <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, overflow: "hidden" }}>
-                {Object.entries(rank.scores).sort((a, b) => b[1] - a[1]).map(([name, pts], i) => {
-                  const isMe = name === username;
-                  const jog = (rank.jornadas || {})[name];
-                  return (
-                    <div key={name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "11px 18px", borderBottom: "1px solid #16203a", background: isMe ? "#1BF5A314" : "transparent" }}>
-                      <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, width: 30, color: i === 0 ? "#F2C14E" : i === 1 ? "#c0cbd9" : i === 2 ? "#cd8f5a" : "#6f87a8" }}>{i + 1}º</span>
-                      <span style={{ flex: 1, fontFamily: FONT, fontSize: 14, color: isMe ? "#1BF5A3" : "#E7EEF8", fontWeight: isMe ? 700 : 400 }}>{name}{isMe ? " (tu)" : ""}</span>
-                      {jog != null && <span style={{ fontFamily: FONT, fontSize: 12, color: "#6f87a8" }}>{jog} jornada{jog === 1 ? "" : "s"}</span>}
-                      <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, color: "#fff" }}>{pts.toLocaleString("pt-PT")} pts</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            <div style={{ marginTop: 12, fontSize: 11.5, color: "#44557a" }}>
-              Ranking partilhado entre todos os jogadores. Podes jogar um grupo por dia — 3 grupos por etapa.
-            </div>
-          </div>
+          )}
 
-          {/* histórico pessoal de jornadas */}
-          {jHist.length > 0 && (() => {
-            const maxT = Math.max(...jHist.map((e) => e.total), 1);
-            return (
-              <section style={{ marginTop: 34 }}>
-                <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 18, margin: "0 0 12px", color: "#fff" }}>As tuas jornadas</h2>
-                <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
-                  {jHist.slice(0, 10).map((e, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <span style={{ fontFamily: FONT, fontSize: 11, color: "#6f87a8", width: 32, flexShrink: 0 }}>J{e.j}</span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ height: 10, borderRadius: 99, background: "#1a2440", overflow: "hidden" }}>
-                          <div style={{ width: `${(e.total / maxT) * 100}%`, height: "100%", background: "linear-gradient(90deg,#1BF5A3,#39E6FF)", transition: "width 500ms" }} />
-                        </div>
-                        <div style={{ fontSize: 10.5, color: "#6f87a8", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.cards.join(" · ")} — ★ {e.cap}</div>
-                      </div>
-                      <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#1BF5A3", width: 54, textAlign: "right", flexShrink: 0 }}>{e.total}</span>
-                    </div>
-                  ))}
+          {/* histórico pessoal de jornadas — tabela detalhada (etapa · grupo · pts · cartas) */}
+          {jHist.length > 0 && (
+            <section style={{ marginTop: 34 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12, flexWrap: "wrap", justifyContent: "space-between" }}>
+                <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 18, margin: 0, color: "#fff" }}>As tuas jornadas</h2>
+                <span style={{ fontSize: 11.5, color: "#6f87a8" }}>Total: <b style={{ color: "#1BF5A3" }}>{jHist.reduce((s, e) => s + e.total, 0)} pts eLiga</b></span>
+              </div>
+              <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, overflow: "hidden" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid #16203a", fontFamily: FONT, fontSize: 10.5, letterSpacing: 1, color: "#6f87a8", textTransform: "uppercase" }}>
+                  <span style={{ flex: 1, minWidth: 120 }}>Fase</span>
+                  <span style={{ flex: 2, minWidth: 140 }}>Cartas (★ capitão)</span>
+                  <span style={{ width: 70, textAlign: "right" }}>Pontos</span>
                 </div>
-              </section>
-            );
-          })()}
+                {jHist.map((e, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: "1px solid #16203a", flexWrap: "wrap" }}>
+                    <span style={{ flex: 1, minWidth: 120, fontFamily: FONT, fontSize: 12.5, fontWeight: 600, color: "#E7EEF8" }}>{e.label || `Jornada ${e.j}`}</span>
+                    <span style={{ flex: 2, minWidth: 140, fontSize: 12, color: "#9FB0C8", display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {(e.cards || []).map((c, ci) => {
+                        const cd = POOL.find((x) => x.name === c);
+                        const isCap = c === e.cap;
+                        return (
+                          <span key={ci} style={{ display: "inline-flex", alignItems: "center", gap: 4, color: isCap ? "#F2C14E" : "#9FB0C8" }}>
+                            {isCap ? "★ " : ""}{c}
+                            {cd && <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 10.5, color: cd.isCaster ? "#39E6FF" : "#fff", background: "#0A1126", border: `1px solid ${RARITY[cd.rarity].color}55`, borderRadius: 6, padding: "1px 5px" }}>{cd.ovr}</span>}
+                          </span>
+                        );
+                      })}
+                    </span>
+                    <span style={{ width: 70, textAlign: "right", fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#1BF5A3" }}>{e.total}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </main>
       )}
 
@@ -2413,8 +2467,8 @@ function App() {
               const isReal = realWinner ? realWinner === id : null;
               const border = sel ? (isReal === null ? "#1BF5A3" : isReal ? "#1BF5A3" : "#ff7b8a") : "#22304d";
               return (
-                <button key={id} onClick={() => onPick(id)} disabled={!!prev.resolved || !!prev.bracketLocked}
-                  style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", borderRadius: 99, cursor: (prev.resolved || prev.bracketLocked) ? "default" : "pointer", border: `1px solid ${border}`, background: sel ? (isReal === false ? "#ff7b8a18" : "#1BF5A318") : "#0A1126", flex: 1, minWidth: 120, justifyContent: "center" }}>
+                <button key={id} onClick={() => onPick(id)} disabled={!!prev.resolved || !!prev.bracketLocked || elimExpirado}
+                  style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", borderRadius: 99, cursor: (prev.resolved || prev.bracketLocked || elimExpirado) ? "default" : "pointer", border: `1px solid ${border}`, background: sel ? (isReal === false ? "#ff7b8a18" : "#1BF5A318") : "#0A1126", flex: 1, minWidth: 120, justifyContent: "center" }}>
                   <ClubLogo team={t} size={18} />
                   <span style={{ fontFamily: FONT, fontSize: 12, color: sel ? "#fff" : "#8fa3bd" }}>{t.short}</span>
                   {sel && prev.resolved && <span style={{ fontSize: 11 }}>{isReal ? "✓" : "✗"}</span>}
@@ -2438,6 +2492,16 @@ function App() {
                 <button onClick={clearPrev} style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1, padding: "8px 14px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>Limpar (admin)</button>
               )}
             </div>
+
+            {/* banner: SÓ quando há nova etapa disponível (deteção automática) */}
+            {prev.resolved && novaEtapaDisponivel && (
+              <div style={{ marginTop: 18, background: "#1a1608", border: "1px solid #F2C14E66", borderRadius: 14, padding: "14px 18px", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+                <div style={{ fontSize: 13.5, color: "#E7EEF8" }}>
+                  <b style={{ color: "#F2C14E" }}>🔔 Nova etapa disponível!</b> Esta previsão é da fase anterior. Começa a previsão da {ligaConfig?.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig?.etapa}`}{ligaConfig?.fase === "grupos" ? ` · Grupo ${ligaConfig?.grupo || "A"}` : ligaConfig?.fase === "eliminatorias" ? " · Eliminatórias" : ""}.
+                </div>
+                <button onClick={novaPrevisao} style={{ ...btn(true), fontSize: 13 }}>↻ Nova previsão</button>
+              </div>
+            )}
 
             {/* 1 · sorteio dos grupos (ou carregar bracket das Finals) */}
             {/* Se já estamos em fase de eliminatórias e não há previsão feita, mostrar botão directo para bracket */}
@@ -2529,16 +2593,25 @@ function App() {
                         </div>
                       </>
                     )}
-                    {prev.fin && !prev.resolved && !prev.bracketLocked && (
+                    {prev.fin && !prev.resolved && !prev.bracketLocked && !elimExpirado && (
                       <div style={{ textAlign: "center", marginTop: 20 }}>
+                        {ligaConfig?.modo === "real" && prazoElimMs != null && (
+                          <div style={{ fontSize: 12, color: "#F2C14E", marginBottom: 10, fontFamily: FONT }}>⏳ Prazo: {fmtPrazo(prazoElimMs)} · faltam {fmtRestante(prazoElimMs)}</div>
+                        )}
                         <button onClick={resolvePrev} style={{ ...btn(true), fontSize: 14, padding: "14px 28px" }}>
                           {ligaConfig?.modo === "real" ? "🔒 Fechar previsões" : "✓ Fechar previsões"}
                         </button>
                       </div>
                     )}
+                    {elimExpirado && !prev.resolved && !prev.bracketLocked && (
+                      <div style={{ marginTop: 16, fontSize: 13, color: "#ff7b8a", background: "#ff7b8a14", border: "1px solid #ff7b8a44", borderRadius: 12, padding: "12px 16px", textAlign: "center" }}>
+                        ⏰ O prazo da previsão terminou ({fmtPrazo(prazoElimMs)}). Já não é possível submeter.
+                      </div>
+                    )}
                     {prev.bracketLocked && !prev.resolved && (
                       <div style={{ marginTop: 16, fontSize: 13, color: "#9FB0C8", background: "#0B1226", border: "1px solid #F2C14E44", borderRadius: 12, padding: "12px 16px", textAlign: "center" }}>
-                        🔒 Previsão fechada — aguarda que o admin valide com os resultados reais.
+                        🔒 Previsão fechada{elimExpirado ? " — o prazo terminou, já não podes alterar." : " — aguarda a validação do admin."}
+                        {!elimExpirado && <div style={{ marginTop: 10 }}><button onClick={unlockBracket} style={{ ...btn(false), fontSize: 12, padding: "8px 16px" }}>✏️ Alterar previsão</button></div>}
                       </div>
                     )}
                     {prev.resolved && (
@@ -2556,8 +2629,9 @@ function App() {
               </>
             ) : (
               <>
-                {/* 2 · previsão de apurados — só para etapas normais, não Finals */}
-                {!prev.groupResult?.isFinals && <section style={{ marginTop: 26 }}>
+                {/* 2 · previsão de apurados — só enquanto NÃO há bracket (ao entrar nas
+                    eliminatórias os grupos desaparecem; a info fica em "As tuas previsões") */}
+                {!prev.groupResult?.isFinals && !(prev.bracket && (ligaConfig?.fase === "eliminatorias" || prev.resolved)) && <section style={{ marginTop: 26 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
                     <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, letterSpacing: 1.5, color: "#1BF5A3" }}>2 · QUEM PASSA AOS QUARTOS?</span>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -2604,27 +2678,60 @@ function App() {
                   {/* 3 · fechar previsão de apurados */}
                   {!prev.groupResult ? (
                     <div style={{ textAlign: "center", marginTop: 18 }}>
-                      <button onClick={simulateGroups} disabled={prev.qual.length !== 8} style={{ ...btn(prev.qual.length === 8), opacity: prev.qual.length === 8 ? 1 : 0.35, cursor: prev.qual.length === 8 ? "pointer" : "not-allowed", fontSize: 13, padding: "13px 26px" }}>
-                        {ligaConfig?.modo === "real" ? "🔒 Fechar previsão dos apurados" : "▶ Simular fase de grupos"}
-                      </button>
-                      <div style={{ fontSize: 11.5, color: "#6f87a8", marginTop: 8 }}>
-                        {prev.qual.length === 8
-                          ? ligaConfig?.modo === "real"
-                            ? "Fecha e bloqueia a tua previsão — os resultados são revelados pelo admin quando a fase terminar."
-                            : "Fecha as tuas previsões e vê quem passou."
-                          : `Escolhe os 8 apurados primeiro (faltam ${8 - prev.qual.length}).`}
-                      </div>
+                      {ligaConfig?.modo === "real" && prazoGruposMs != null && !grupoExpirado && (
+                        <div style={{ fontSize: 12, color: "#F2C14E", marginBottom: 10, fontFamily: FONT, letterSpacing: 0.5 }}>
+                          ⏳ Prazo para fechar: {fmtPrazo(prazoGruposMs)} · faltam {fmtRestante(prazoGruposMs)}
+                        </div>
+                      )}
+                      {grupoExpirado ? (
+                        <div style={{ fontSize: 13, color: "#ff7b8a", background: "#ff7b8a14", border: "1px solid #ff7b8a44", borderRadius: 12, padding: "12px 16px", maxWidth: 460, margin: "0 auto" }}>
+                          ⏰ O prazo para a previsão dos apurados terminou ({fmtPrazo(prazoGruposMs)}). Já não é possível submeter.
+                        </div>
+                      ) : (
+                        <>
+                          <button onClick={simulateGroups} disabled={prev.qual.length !== 8} style={{ ...btn(prev.qual.length === 8), opacity: prev.qual.length === 8 ? 1 : 0.35, cursor: prev.qual.length === 8 ? "pointer" : "not-allowed", fontSize: 13, padding: "13px 26px" }}>
+                            {ligaConfig?.modo === "real" ? "🔒 Fechar previsão dos apurados" : "▶ Simular fase de grupos"}
+                          </button>
+                          <div style={{ fontSize: 11.5, color: "#6f87a8", marginTop: 8 }}>
+                            {prev.qual.length === 8
+                              ? ligaConfig?.modo === "real"
+                                ? "Fecha e bloqueia a tua previsão — os resultados são revelados pelo admin quando a fase terminar."
+                                : "Fecha as tuas previsões e vê quem passou."
+                              : `Escolhe os 8 apurados primeiro (faltam ${8 - prev.qual.length}).`}
+                          </div>
+                        </>
+                      )}
                     </div>
                   ) : prev.groupResult?.locked ? (
-                    <div style={{ marginTop: 16, fontSize: 13, color: "#9FB0C8", background: "#0B1226", border: "1px solid #F2C14E44", borderRadius: 12, padding: "12px 16px" }}>
-                      🔒 Previsão fechada — aguarda que o admin revele os resultados da fase de grupos.
+                    <div style={{ marginTop: 16, fontSize: 13, color: "#9FB0C8", background: "#0B1226", border: "1px solid #F2C14E44", borderRadius: 12, padding: "12px 16px", textAlign: "center" }}>
+                      🔒 Previsão dos apurados fechada{grupoExpirado ? " — o prazo terminou, já não podes alterar." : ". Aguarda que o admin revele os resultados."}
+                      {!grupoExpirado && <div style={{ marginTop: 10 }}><button onClick={unlockGroups} style={{ ...btn(false), fontSize: 12, padding: "8px 16px" }}>✏️ Alterar previsão</button>{prazoGruposMs != null && <div style={{ fontSize: 11, color: "#6f87a8", marginTop: 6 }}>Podes alterar até {fmtPrazo(prazoGruposMs)} (faltam {fmtRestante(prazoGruposMs)}).</div>}</div>}
                     </div>
                   ) : (
-                    <div style={{ marginTop: 16, fontSize: 13, color: "#9FB0C8", background: "#0B1226", border: "1px solid #1BF5A344", borderRadius: 12, padding: "12px 16px" }}>
-                      {ligaConfig?.fase === "eliminatorias" || prev.bracket
-                        ? <>✓ Fase de grupos terminada — acertaste <b style={{ color: "#1BF5A3" }}>{prev.groupResult.qualHits}/8</b> apurados (<b style={{ color: "#1BF5A3" }}>+{prev.groupResult.qualHits * 10} pts</b>). Agora prevê as eliminatórias.</>
-                        : <>✓ Previsão dos apurados fechada. As eliminatórias ainda não começaram — volta quando estiverem disponíveis para prever os confrontos.</>}
-                    </div>
+                    <>
+                      <div style={{ marginTop: 16, fontSize: 13, color: "#9FB0C8", background: "#0B1226", border: "1px solid #1BF5A344", borderRadius: 12, padding: "12px 16px" }}>
+                        {ligaConfig?.fase === "eliminatorias" || prev.bracket
+                          ? <>✓ Fase de grupos terminada — acertaste <b style={{ color: "#1BF5A3" }}>{prev.groupResult.qualHits}/8</b> apurados. Agora prevê as eliminatórias.</>
+                          : <>✓ Previsão dos apurados fechada. As eliminatórias ainda não começaram — volta quando estiverem disponíveis para prever os confrontos.</>}
+                      </div>
+                      {/* prémios da fase de grupos: pontos eLiga (ranking) + Twitch + pack + clubes acertados */}
+                      {prev.groupResult?.realQual && (
+                        <div style={{ marginTop: 12, background: "#0E162E", border: "1px solid #1BF5A355", borderRadius: 12, padding: "14px 16px" }}>
+                          <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, color: "#1BF5A3", marginBottom: 10 }}>🏆 Prémios da fase de grupos</div>
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                            <span style={{ fontFamily: FONT, fontSize: 12, color: "#04140c", background: "#1BF5A3", borderRadius: 99, padding: "6px 14px", fontWeight: 700 }}>🏅 +{prev.groupResult.qualHits * 10} pts eLiga (ranking)</span>
+                            {prev.groupReward?.twitch > 0 && (
+                              <span style={{ fontFamily: FONT, fontSize: 12, color: "#fff", background: "#9146FF22", border: "1px solid #9146FF66", borderRadius: 99, padding: "6px 14px" }}>🟣 +{prev.groupReward.twitch} pts Twitch</span>
+                            )}
+                            {prev.groupReward?.pack && !prev.groupRewardClaimed && (
+                              <button onClick={claimGroupReward} style={{ ...btn(true), fontSize: 12, padding: "9px 18px" }}>🎁 Abrir {prev.groupReward.pack === "finals" ? "Pack Finals" : "Pack Base"}</button>
+                            )}
+                            {prev.groupReward?.pack && prev.groupRewardClaimed && <span style={{ fontFamily: FONT, fontSize: 12, color: "#1BF5A3" }}>✓ Pack recebido</span>}
+                            {!prev.groupReward?.pack && !(prev.groupReward?.twitch > 0) && <span style={{ fontSize: 12, color: "#8fa3bd" }}>Sem pack/Twitch nesta fase — acerta mais para a próxima!</span>}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </section>}
 
@@ -2662,8 +2769,11 @@ function App() {
                       </>
                     )}
 
-                    {prev.fin && !prev.resolved && !prev.bracketLocked && (
+                    {prev.fin && !prev.resolved && !prev.bracketLocked && !elimExpirado && (
                       <div style={{ textAlign: "center", marginTop: 18 }}>
+                        {ligaConfig?.modo === "real" && prazoElimMs != null && (
+                          <div style={{ fontSize: 12, color: "#F2C14E", marginBottom: 10, fontFamily: FONT }}>⏳ Prazo para fechar: {fmtPrazo(prazoElimMs)} · faltam {fmtRestante(prazoElimMs)}</div>
+                        )}
                         <button onClick={resolvePrev} style={{ ...btn(true), fontSize: 13, padding: "13px 26px" }}>
                           {ligaConfig?.modo === "real" ? "🔒 Fechar previsão das eliminatórias" : "▶ Simular eliminatórias"}
                         </button>
@@ -2674,9 +2784,15 @@ function App() {
                         </div>
                       </div>
                     )}
+                    {elimExpirado && !prev.resolved && !prev.bracketLocked && (
+                      <div style={{ marginTop: 16, fontSize: 13, color: "#ff7b8a", background: "#ff7b8a14", border: "1px solid #ff7b8a44", borderRadius: 12, padding: "12px 16px", textAlign: "center" }}>
+                        ⏰ O prazo da previsão das eliminatórias terminou ({fmtPrazo(prazoElimMs)}). As tuas escolhas atuais já não podem ser submetidas.
+                      </div>
+                    )}
                     {prev.bracketLocked && !prev.resolved && (
                       <div style={{ marginTop: 16, fontSize: 13, color: "#9FB0C8", background: "#0B1226", border: "1px solid #F2C14E44", borderRadius: 12, padding: "12px 16px", textAlign: "center" }}>
-                        🔒 Previsão das eliminatórias fechada — aguarda que o admin valide com os resultados reais.
+                        🔒 Previsão das eliminatórias fechada{elimExpirado ? " — o prazo terminou, já não podes alterar." : " — aguarda a validação do admin."}
+                        {!elimExpirado && <div style={{ marginTop: 10 }}><button onClick={unlockBracket} style={{ ...btn(false), fontSize: 12, padding: "8px 16px" }}>✏️ Alterar previsão</button>{prazoElimMs != null && <div style={{ fontSize: 11, color: "#6f87a8", marginTop: 6 }}>Podes alterar até {fmtPrazo(prazoElimMs)} (faltam {fmtRestante(prazoElimMs)}).</div>}</div>}
                       </div>
                     )}
                   </section>
@@ -2690,26 +2806,101 @@ function App() {
                       {!prev.groupResult?.isFinals && prev.groupResult?.qualHits != null && <>Apurados: <b style={{ color: "#1BF5A3" }}>{prev.groupResult.qualHits}/8</b> (+{prev.groupResult.qualHits * 10}) · </>}
                       Quartos: <b style={{ color: "#1BF5A3" }}>{prev.resolved.qfHits}/4</b> (+{prev.resolved.qfHits * 10}) · Meias: <b style={{ color: "#1BF5A3" }}>{prev.resolved.sfHits}/2</b> (+{prev.resolved.sfHits * 15}) · Campeão: {prev.resolved.champOk ? <b style={{ color: "#F2C14E" }}>certo! (+50)</b> : <>foi <b style={{ color: "#F2C14E" }}>{teamOf(prev.resolved.champ)?.name ?? prev.resolved.champ}</b></>}
                     </div>
-                    <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 26, color: prev.resolved.score >= 130 ? "#F2C14E" : prev.resolved.score >= 80 ? "#1BF5A3" : "#8fa3bd", margin: "10px 0 14px" }}>{prev.resolved.score} pts</div>
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 26, color: prev.resolved.score >= 130 ? "#F2C14E" : prev.resolved.score >= 80 ? "#1BF5A3" : "#8fa3bd", margin: "10px 0 4px" }}>{prev.resolved.score} pts no total</div>
+                    <div style={{ fontSize: 11.5, color: "#6f87a8", marginBottom: 14 }}>Prémios das eliminatórias com base nos pontos desta fase.</div>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                      <span style={{ fontFamily: FONT, fontSize: 12, color: "#04140c", background: "#1BF5A3", borderRadius: 99, padding: "8px 14px", fontWeight: 700 }}>🏅 +{(prev.resolved.qfHits * 10 + prev.resolved.sfHits * 15 + (prev.resolved.champOk ? 50 : 0))} pts eLiga (ranking)</span>
+                      {prev.resolved.twitch > 0 && (
+                        <span style={{ fontFamily: FONT, fontSize: 12, color: "#fff", background: "#9146FF22", border: "1px solid #9146FF66", borderRadius: 99, padding: "8px 14px" }}>🟣 +{prev.resolved.twitch} pts Twitch</span>
+                      )}
                       {prev.resolved.rewardPack && !prev.rewardClaimed && (
                         <button onClick={claimPrevReward} style={{ ...btn(true), fontSize: 13, padding: "13px 26px" }}>
                           🎁 Abrir recompensa — {prev.resolved.rewardPack === "finals" ? "Pack Finals" : "Pack Base"}
                         </button>
                       )}
-                      {prev.resolved.rewardPack && prev.rewardClaimed && <span style={{ fontFamily: FONT, fontSize: 12, color: "#1BF5A3", alignSelf: "center" }}>✓ Recompensa recebida</span>}
-                      {!prev.resolved.rewardPack && <span style={{ fontSize: 12.5, color: "#8fa3bd", alignSelf: "center" }}>Precisavas de 80+ pts para ganhar um pack. Para a próxima!</span>}
-                      {(prev.rewardClaimed || !prev.resolved.rewardPack) && (
-                        <button onClick={clearPrev} style={{ ...btn(false), fontSize: 13 }}>↻ Nova previsão</button>
-                      )}
+                      {prev.resolved.rewardPack && prev.rewardClaimed && <span style={{ fontFamily: FONT, fontSize: 12, color: "#1BF5A3", alignSelf: "center" }}>✓ Pack recebido</span>}
+                      {!prev.resolved.rewardPack && !(prev.resolved.twitch > 0) && <span style={{ fontSize: 12.5, color: "#8fa3bd", alignSelf: "center" }}>Sem prémio nesta fase — acerta mais para a próxima!</span>}
                     </div>
                   </section>
                 )}
               </>
             )}
+
+            {/* tabela: pontos de previsão por etapa/fase (no fim da página) */}
+            {prevHist.length > 0 && (
+              <section style={{ marginTop: 40 }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
+                  <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 18, margin: 0, color: "#fff" }}>As tuas previsões</h2>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <span style={{ fontSize: 11.5, color: "#6f87a8" }}>Total: <b style={{ color: "#1BF5A3" }}>{prevHist.reduce((s, e) => s + (e.score || 0), 0)} pts eLiga</b></span>
+                    {isAdmin && <button onClick={() => { setPrevHist([]); setToast("Tabela de previsões limpa."); setTimeout(() => setToast(null), 1800); }} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Limpar tabela (admin)</button>}
+                  </div>
+                </div>
+                <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, overflow: "hidden" }}>
+                  {prevHist.map((e, i) => (
+                    <div key={i} style={{ padding: "12px 16px", borderBottom: "1px solid #16203a" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                        <span style={{ flex: 1, minWidth: 140, fontFamily: FONT, fontSize: 13, fontWeight: 700, color: e.fase === "grupos" ? "#1BF5A3" : "#F2C14E" }}>{e.label || "Etapa"}</span>
+                        <span style={{ flex: 2, minWidth: 150, fontSize: 12, color: "#9FB0C8" }}>
+                          {e.fase === "grupos"
+                            ? <>Apurados certos: <b style={{ color: "#1BF5A3" }}>{e.qualHits}/8</b></>
+                            : <>QF <b style={{ color: "#1BF5A3" }}>{e.qfHits}/4</b> · MF <b style={{ color: "#1BF5A3" }}>{e.sfHits}/2</b> · Campeão {e.champOk ? <b style={{ color: "#F2C14E" }}>✓</b> : <b style={{ color: "#ff7b8a" }}>✗</b>}</>}
+                        </span>
+                        <span style={{ width: 90, textAlign: "right", fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#1BF5A3" }}>{e.score} pts</span>
+                      </div>
+                      {e.fase === "grupos" && Array.isArray(e.qual) && Array.isArray(e.realQual) && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+                          {e.qual.map((id) => {
+                            const t = teamOf(id); if (!t) return null;
+                            const acertou = e.realQual.includes(id);
+                            return (
+                              <div key={id} style={{ display: "flex", alignItems: "center", gap: 5, background: acertou ? "#1BF5A314" : "#ff7b8a14", border: `1px solid ${acertou ? "#1BF5A355" : "#ff7b8a44"}`, borderRadius: 99, padding: "3px 9px" }}>
+                                <ClubLogo team={t} size={15} />
+                                <span style={{ fontFamily: FONT, fontSize: 11, color: acertou ? "#1BF5A3" : "#ff7b8a" }}>{t.short} {acertou ? "✓" : "✗"}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
           </main>
         );
       })()}
+
+      {tab === "ranking" && (
+        <main style={{ maxWidth: 760, margin: "0 auto", padding: "36px 20px 80px" }}>
+          <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: 0 }}>Ranking eLiga</h1>
+          <p style={{ color: "#8fa3bd", fontSize: 14, marginTop: 6, maxWidth: 640 }}>
+            Os <b style={{ color: "#1BF5A3" }}>pontos eLiga</b> juntam tudo: o que ganhas na <b>Competição</b> (jornadas) e nas <b>Previsões</b> (apurados, quartos, meias e campeão). Os pontos Twitch são um bónus à parte e <b>não</b> contam para este ranking.
+          </p>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+            <button onClick={refreshRanking} style={{ ...btn(false), fontSize: 12, padding: "8px 16px" }}>↻ Atualizar</button>
+          </div>
+          {Object.keys(rank.scores).length === 0 ? (
+            <div style={{ marginTop: 12, background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "24px 20px", textAlign: "center", color: "#6f87a8", fontSize: 13 }}>
+              Ainda não há pontos. Joga uma jornada na Competição ou faz uma previsão para entrares no ranking.
+            </div>
+          ) : (
+            <div style={{ marginTop: 12, background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, overflow: "hidden" }}>
+              {Object.entries(rank.scores).sort((a, b) => b[1] - a[1]).map(([name, pts], i) => {
+                const isMe = name === username;
+                return (
+                  <div key={name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 18px", borderBottom: "1px solid #16203a", background: isMe ? "#1BF5A314" : "transparent" }}>
+                    <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, width: 30, color: i === 0 ? "#F2C14E" : i === 1 ? "#c0cbd9" : i === 2 ? "#cd8f5a" : "#6f87a8" }}>{i + 1}º</span>
+                    <span style={{ flex: 1, fontFamily: FONT, fontSize: 14, color: isMe ? "#1BF5A3" : "#E7EEF8", fontWeight: isMe ? 700 : 400 }}>{name}{isMe ? " (tu)" : ""}</span>
+                    <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#fff" }}>{pts.toLocaleString("pt-PT")}</span>
+                    <span style={{ fontFamily: FONT, fontSize: 11, color: "#6f87a8" }}>pontos eLiga</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </main>
+      )}
 
       {tab === "objetivos" && (
         <main style={{ maxWidth: 900, margin: "0 auto", padding: "36px 20px 80px" }}>
@@ -3142,6 +3333,15 @@ function App() {
         const modoReal = cfg.modo === "real";
         const card16 = { background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "20px 22px", marginBottom: 16 };
         const label = (t) => <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1.5, color: "#6f87a8", marginBottom: 8 }}>{t}</div>;
+        // ISO -> valor para <input type="datetime-local"> (hora local)
+        const toLocalInput = (iso) => {
+          if (!iso) return "";
+          const d = new Date(iso);
+          if (isNaN(d.getTime())) return "";
+          const pad = (n) => String(n).padStart(2, "0");
+          return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        };
+        const dtInput = { background: "#060A16", color: "#fff", border: "1px solid #22304d", borderRadius: 8, padding: "8px 12px", fontFamily: FONT, fontSize: 13, colorScheme: "dark" };
         const sel = (val, opts, onChange) => (
           <select value={val} onChange={(e) => onChange(e.target.value)}
             style={{ background: "#060A16", color: "#fff", border: "1px solid #22304d", borderRadius: 8, padding: "8px 12px", fontFamily: FONT, fontSize: 13, cursor: "pointer" }}>
@@ -3161,7 +3361,7 @@ function App() {
                   ["Modo", modoReal ? "🟢 Resultados Reais" : "🔵 Simulação"],
                   ["Etapa", cfg.etapa === "finals" ? "Finals" : `Etapa ${cfg.etapa}`],
                   ["Fase", cfg.fase === "grupos" ? "Fase de Grupos" : "Eliminatórias"],
-                  ...(cfg.fase === "grupos" ? [["Grupo", `Grupo ${cfg.grupo || "?"}`]] : []),
+                  ...(cfg.fase === "grupos" ? [["Grupo", `Grupo ${cfg.grupo || "A"}`]] : []),
                 ].map(([k, v]) => (
                   <div key={k} style={{ background: "#060A16", border: "1px solid #1a2440", borderRadius: 10, padding: "8px 14px", minWidth: 100 }}>
                     <div style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, color: "#6f87a8", marginBottom: 2 }}>{k}</div>
@@ -3217,6 +3417,45 @@ function App() {
                     Próxima: {(() => { const p = getProximaFase(cfg); return p ? `${p.etapa === "finals" ? "Finals" : `Etapa ${p.etapa}`}${p.fase === "grupos" ? ` · Grupo ${p.grupo}` : " · Eliminatórias"}` : "—"; })()}
                   </span>
                 )}
+              </div>
+            </div>
+
+            {/* PRAZOS DAS PREVISÕES */}
+            <div style={card16}>
+              {label("PRAZOS DAS PREVISÕES")}
+              <p style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 14, lineHeight: 1.6 }}>
+                Define até quando os jogadores podem <b style={{ color: "#fff" }}>submeter ou alterar</b> cada previsão. Depois do prazo, ninguém pode fechar nem mudar escolhas — mesmo que tenha começado e não tenha submetido. Deixa em branco para não haver prazo.
+              </p>
+              <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 11, color: "#1BF5A3", marginBottom: 4, fontFamily: FONT }}>PRAZO · FASE DE GRUPOS</div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input type="datetime-local" value={toLocalInput(cfg.prazoGrupos)} disabled={adminConfigSaving}
+                      onChange={(e) => adminSaveConfig({ prazoGrupos: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                      style={dtInput} />
+                    {cfg.prazoGrupos && (
+                      <button onClick={() => adminSaveConfig({ prazoGrupos: null })} title="Remover prazo"
+                        style={{ fontFamily: FONT, fontSize: 11, padding: "8px 10px", borderRadius: 8, cursor: "pointer", background: "transparent", border: "1px solid #ff7b8a55", color: "#ff7b8a" }}>✕</button>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#F2C14E", marginBottom: 4, fontFamily: FONT }}>PRAZO · ELIMINATÓRIAS</div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input type="datetime-local" value={toLocalInput(cfg.prazoElim)} disabled={adminConfigSaving}
+                      onChange={(e) => adminSaveConfig({ prazoElim: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                      style={dtInput} />
+                    {cfg.prazoElim && (
+                      <button onClick={() => adminSaveConfig({ prazoElim: null })} title="Remover prazo"
+                        style={{ fontFamily: FONT, fontSize: 11, padding: "8px 10px", borderRadius: 8, cursor: "pointer", background: "transparent", border: "1px solid #ff7b8a55", color: "#ff7b8a" }}>✕</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div style={{ marginTop: 12, fontSize: 11.5, color: "#6f87a8" }}>
+                {cfg.prazoGrupos ? `Grupos fecham: ${new Date(cfg.prazoGrupos).toLocaleString("pt-PT")}` : "Grupos: sem prazo definido."}
+                {"  ·  "}
+                {cfg.prazoElim ? `Eliminatórias fecham: ${new Date(cfg.prazoElim).toLocaleString("pt-PT")}` : "Eliminatórias: sem prazo definido."}
               </div>
             </div>
 

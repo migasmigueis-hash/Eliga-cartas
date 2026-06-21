@@ -1,19 +1,10 @@
-// supabase/functions/previsoes-simular-grupos/index.ts v3
+// supabase/functions/previsoes-simular-grupos/index.ts v4
 //
 // MOMENTO 1 do jogador: "Fechar previsão dos apurados".
+// Modo simulacao: simula via RNG e revela qualHits + bracket.
+// Modo real: bloqueia (🔒) sem revelar. Respeita prazoGrupos.
 //
-// Modo simulacao: simula os resultados via RNG e revela logo qualHits + bracket.
-//
-// Modo real: NÃO revela nada e NÃO lê dados reais. Apenas guarda os 8 apurados
-//            escolhidos pelo jogador e BLOQUEIA (🔒). O bracket real (as 8 equipas
-//            que de facto passaram) é inserido pelo admin e revelado depois pela
-//            função previsoes-revelar-grupos (Avaliar #1).
-//
-// FIX v3 (Bug 3 — "fechar apurados revela resultados"):
-//   - em modo real removemos toda a leitura de etapaN_grupos_resultado / etapaN_qf.
-//     groupResult fica { locked:true, realQual:null, qualHits:null } e bracket null.
-//
-// body: { qual: string[] } — 8 ids de equipas, máx. 3 por grupo
+// body: { qual: string[] } — 8 ids, máx. 3 por grupo
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -46,7 +37,15 @@ Deno.serve(async (req: Request) => {
 
   const state = (profileRes.data.state ?? {}) as Record<string, unknown>;
   const prev = { ...EMPTY_PREV, ...((state.prev as Record<string, unknown>) ?? {}) };
-  const config = (configRes.data?.data ?? { modo: "simulacao", etapa: 1 }) as { modo: string; etapa: number | string };
+  const config = (configRes.data?.data ?? { modo: "simulacao", etapa: 1 }) as { modo: string; etapa: number | string; prazoGrupos?: string | null };
+
+  // prazo da fase de grupos (só em modo real)
+  if (config.modo === "real" && config.prazoGrupos) {
+    const prazo = new Date(config.prazoGrupos).getTime();
+    if (!isNaN(prazo) && Date.now() > prazo) {
+      return jsonResponse({ error: "O prazo para fechar a previsão dos apurados já terminou." }, 400);
+    }
+  }
 
   const groups = prev.groups;
   if (!Array.isArray(groups) || groups.length !== 3 || groups.some((g) => !Array.isArray(g) || g.length !== 6)) {
@@ -71,7 +70,6 @@ Deno.serve(async (req: Request) => {
   let newPrev: Record<string, unknown>;
 
   if (config.modo === "real") {
-    // BLOQUEAR sem revelar. O bracket real chega via previsoes-revelar-grupos.
     newPrev = {
       ...prev, qual,
       groupResult: { locked: true, realQual: null, qualHits: null },
@@ -80,7 +78,6 @@ Deno.serve(async (req: Request) => {
       resolved: null, bracketLocked: false, rewardClaimed: false,
     };
   } else {
-    // SIMULAÇÃO: revela tudo de imediato (RNG do servidor).
     const r = simulateGroups(groups as string[][]);
     const qualHits = (qual as string[]).filter((id) => r.realQual.includes(id)).length;
     newPrev = {

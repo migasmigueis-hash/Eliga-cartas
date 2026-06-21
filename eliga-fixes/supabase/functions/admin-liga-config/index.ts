@@ -1,19 +1,13 @@
-// supabase/functions/admin-liga-config/index.ts v3
+// supabase/functions/admin-liga-config/index.ts v4
 //
 // Atualiza a configuração do modo de jogo em liga_data.config:
 //   - modo: "simulacao" | "real"
 //   - etapa: 1 | 2 | 3 | "finals"
 //   - fase: "grupos" | "eliminatorias"
-//   - grupo: "A" | "B" | "C" | null  (fase de grupos — qual grupo joga hoje)
+//   - grupo: "A" | "B" | "C" | null
+//   - prazoGrupos / prazoElim: ISO string | null  (deadline das previsões)
 //
-// body: qualquer subconjunto de { modo, etapa, fase, grupo }
-//
-// FIX v3 (Bug 1 — "Já jogaste o Grupo C" em eliminatórias):
-//   - grupo passa a aceitar `null` para LIMPAR o grupo ao sair da fase de grupos.
-//   - invariante garantida no servidor: em "eliminatorias" ou "finals" o grupo é
-//     sempre forçado a null, mesmo que o cliente o envie. Isto evita que um grupo
-//     antigo (ex.: "C") fique colado e o play-jornada continue a achar que ainda
-//     se está a jogar a fase de grupos.
+// body: qualquer subconjunto de { modo, etapa, fase, grupo, prazoGrupos, prazoElim }
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -58,11 +52,20 @@ Deno.serve(async (req: Request) => {
   }
   if ("grupo" in body) {
     if (body.grupo === null || body.grupo === "") {
-      patch.grupo = null; // limpar o grupo (saída da fase de grupos)
+      patch.grupo = null;
     } else if (!["A", "B", "C"].includes(body.grupo as string)) {
       return jsonResponse({ error: "grupo inválido (A, B, C ou null)." }, 400);
     } else {
       patch.grupo = body.grupo;
+    }
+  }
+  // prazos das previsões (ISO string ou null para remover)
+  for (const k of ["prazoGrupos", "prazoElim"]) {
+    if (k in body) {
+      const v = body[k];
+      if (v === null || v === "") { patch[k] = null; }
+      else if (typeof v === "string" && !isNaN(new Date(v).getTime())) { patch[k] = new Date(v).toISOString(); }
+      else { return jsonResponse({ error: `${k} inválido (data ISO ou null).` }, 400); }
     }
   }
 

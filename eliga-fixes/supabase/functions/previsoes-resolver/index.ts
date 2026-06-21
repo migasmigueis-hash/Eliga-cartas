@@ -1,19 +1,8 @@
-// supabase/functions/previsoes-resolver/index.ts v3
+// supabase/functions/previsoes-resolver/index.ts v4
 //
-// MOMENTO 2 do jogador: "Fechar previsão das eliminatórias" (bracket).
-//
-// Modo simulacao: resolve a bracket via RNG e revela logo a pontuação.
-//
-// Modo real: NÃO resolve nem revela resultados. Valida a consistência das
-//            escolhas com a bracket, guarda qf/sf/fin e BLOQUEIA
-//            (prev.bracketLocked = true, prev.resolved = null). As escolhas ficam
-//            fixas. A pontuação é feita pelo admin (Avaliar #2 =
-//            previsoes-validar-todos) depois de a eliminatória ser jogada.
-//
-// FIX v3 (Bug 4 — "fechar bracket revela resultados"):
-//   - em modo real deixámos de ler etapaN_qf/sf/final e de calcular score aqui.
-//     O cliente mostra "🔒 Previsão fechada — aguarda validação do admin" quando
-//     prev.bracketLocked === true && !prev.resolved.
+// MOMENTO 2 do jogador: "Fechar previsão das eliminatórias".
+// Modo simulacao: resolve via RNG e revela a pontuação.
+// Modo real: bloqueia (bracketLocked) sem revelar. Respeita prazoElim.
 //
 // body: { qf: string[4], sf: string[2], fin: string }
 
@@ -49,7 +38,15 @@ Deno.serve(async (req: Request) => {
 
   const state = (profileRes.data.state ?? {}) as Record<string, unknown>;
   const prev = { ...EMPTY_PREV, ...((state.prev as Record<string, unknown>) ?? {}) };
-  const config = (configRes.data?.data ?? { modo: "simulacao", etapa: 1 }) as { modo: string; etapa: number | string };
+  const config = (configRes.data?.data ?? { modo: "simulacao", etapa: 1 }) as { modo: string; etapa: number | string; prazoElim?: string | null };
+
+  // prazo das eliminatórias (só em modo real)
+  if (config.modo === "real" && config.prazoElim) {
+    const prazo = new Date(config.prazoElim).getTime();
+    if (!isNaN(prazo) && Date.now() > prazo) {
+      return jsonResponse({ error: "O prazo para fechar a previsão das eliminatórias já terminou." }, 400);
+    }
+  }
 
   const bracket = prev.bracket;
   const groupResult = prev.groupResult as Record<string, unknown> | null;
@@ -78,18 +75,15 @@ Deno.serve(async (req: Request) => {
   if (sfArr[1] !== qfArr[2] && sfArr[1] !== qfArr[3]) return jsonResponse({ error: "Meia-final 2 inconsistente com os teus quartos." }, 400);
   if (fin !== sfArr[0] && fin !== sfArr[1]) return jsonResponse({ error: "Campeão inconsistente com as tuas meias-finais." }, 400);
 
-  // MODO REAL: bloquear sem revelar. Quem pontua é o admin (Avaliar #2).
+  // MODO REAL: bloquear sem revelar.
   if (config.modo === "real") {
     const newPrev = { ...prev, qf, sf, fin, bracketLocked: true, resolved: null, rewardClaimed: false };
-    const { error: updErr } = await admin
-      .from("profiles")
-      .update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() })
-      .eq("id", userId);
+    const { error: updErr } = await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", userId);
     if (updErr) return jsonResponse({ error: updErr.message }, 500);
     return jsonResponse({ prev: newPrev, bracketLocked: true });
   }
 
-  // MODO SIMULAÇÃO: resolve via RNG e revela logo.
+  // MODO SIMULAÇÃO: resolve via RNG e revela.
   const result = resolveBracket(bracketArr);
   const rqf = result.rqf, rsf = result.rsf, rchamp = result.rchamp;
 
@@ -104,10 +98,7 @@ Deno.serve(async (req: Request) => {
   const resolved = { rqf, rsf, champ: rchamp, qfHits, sfHits, champOk, score, rewardPack };
   const newPrev = { ...prev, qf, sf, fin, resolved, bracketLocked: false, rewardClaimed: false };
 
-  const { error: updErr } = await admin
-    .from("profiles")
-    .update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() })
-    .eq("id", userId);
+  const { error: updErr } = await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", userId);
   if (updErr) return jsonResponse({ error: updErr.message }, 500);
 
   return jsonResponse({ prev: newPrev });

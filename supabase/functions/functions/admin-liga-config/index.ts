@@ -1,13 +1,11 @@
-// supabase/functions/admin-liga-config/index.ts v4
+// supabase/functions/admin-liga-config/index.ts v5
 //
-// Atualiza a configuração do modo de jogo em liga_data.config:
-//   - modo: "simulacao" | "real"
-//   - etapa: 1 | 2 | 3 | "finals"
-//   - fase: "grupos" | "eliminatorias"
-//   - grupo: "A" | "B" | "C" | null
-//   - prazoGrupos / prazoElim: ISO string | null  (deadline das previsões)
+// Config do modo de jogo em liga_data.config:
+//   modo, etapa, fase, grupo, prazoGrupos, prazoElim
 //
-// body: qualquer subconjunto de { modo, etapa, fase, grupo, prazoGrupos, prazoElim }
+// INVARIANTES (corrige "Grupo ?" / "Grupo null"):
+//   - fase "eliminatorias" ou etapa "finals"  → grupo = null
+//   - fase "grupos" (etapa normal) e grupo em falta → grupo = "A"
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -18,7 +16,6 @@ Deno.serve(async (req: Request) => {
 
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return jsonResponse({ error: "JSON inválido." }, 400); }
-
   if (body.__debug) return jsonResponse({ receivedBody: body, keys: Object.keys(body) });
 
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -51,29 +48,26 @@ Deno.serve(async (req: Request) => {
     patch.fase = body.fase;
   }
   if ("grupo" in body) {
-    if (body.grupo === null || body.grupo === "") {
-      patch.grupo = null;
-    } else if (!["A", "B", "C"].includes(body.grupo as string)) {
-      return jsonResponse({ error: "grupo inválido (A, B, C ou null)." }, 400);
-    } else {
-      patch.grupo = body.grupo;
-    }
+    if (body.grupo === null || body.grupo === "") patch.grupo = null;
+    else if (!["A", "B", "C"].includes(body.grupo as string)) return jsonResponse({ error: "grupo inválido (A, B, C ou null)." }, 400);
+    else patch.grupo = body.grupo;
   }
-  // prazos das previsões (ISO string ou null para remover)
   for (const k of ["prazoGrupos", "prazoElim"]) {
     if (k in body) {
       const v = body[k];
-      if (v === null || v === "") { patch[k] = null; }
-      else if (typeof v === "string" && !isNaN(new Date(v).getTime())) { patch[k] = new Date(v).toISOString(); }
-      else { return jsonResponse({ error: `${k} inválido (data ISO ou null).` }, 400); }
+      if (v === null || v === "") patch[k] = null;
+      else if (typeof v === "string" && !isNaN(new Date(v).getTime())) patch[k] = new Date(v).toISOString();
+      else return jsonResponse({ error: `${k} inválido (data ISO ou null).` }, 400);
     }
   }
 
   const newConfig = { ...currentData, ...patch } as Record<string, unknown>;
 
-  // INVARIANTE: fora da fase de grupos não pode existir grupo "ativo".
+  // invariantes do grupo
   if (newConfig.fase === "eliminatorias" || newConfig.etapa === "finals") {
     newConfig.grupo = null;
+  } else if (newConfig.fase === "grupos" && !["A", "B", "C"].includes(newConfig.grupo as string)) {
+    newConfig.grupo = "A"; // nunca deixar grupo em falta na fase de grupos
   }
 
   const { error: updErr } = await admin.from("liga_data").upsert(

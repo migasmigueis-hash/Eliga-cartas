@@ -1,13 +1,7 @@
 // supabase/functions/play-jornada/index.ts v2
-//
-// Modo real: lê os resultados das jornadas/eliminatórias em liga_data e calcula
-// pontos com base nos resultados reais.
-//
-// FIX v2: guard simétrico de "já jogaste" também para as eliminatórias (antes só
-// os grupos estavam protegidos no servidor; as eliminatórias só eram travadas no
-// cliente, o que permitia repeti-las via Postman).
-//
-// body: { lineup: [string, string, string], captain: 0|1|2 }
+// Modo real: lê resultados reais e calcula pontos. Guard de "já jogaste" para
+// grupos E eliminatórias.
+// body: { lineup: [string,string,string], captain: 0|1|2 }
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -22,26 +16,18 @@ interface RealMatch {
 
 function scoreRealCard(cardId: string, allMatches: RealMatch[]): ScoreRow {
   const card = JORNADA_CARDS.find((c) => c.id === cardId)!;
-
   if (card.isCaster) {
-    return {
-      cardId, captain: false, synergy: 0,
-      perf: { vit: 0, emp: 0, der: 0, golos: 0, jogos: 0, games: [] },
-      base: 0, bonus: 0, fx: effectOf(card), subtotal: 0,
-    };
+    return { cardId, captain: false, synergy: 0, perf: { vit: 0, emp: 0, der: 0, golos: 0, jogos: 0, games: [] }, base: 0, bonus: 0, fx: effectOf(card), subtotal: 0 };
   }
-
   const lookupId = card.isClub
     ? card.team
     : ((card as unknown as { ref?: string }).ref ? `pl-${(card as unknown as { ref: string }).ref}` : cardId);
-
   const myMatches = card.isClub
     ? allMatches.filter((m) => m.teamA === lookupId || m.teamB === lookupId)
     : allMatches.filter((m) => m.playerA === lookupId || m.playerB === lookupId);
 
   let vit = 0, emp = 0, der = 0, golos = 0;
   const games: { opp: string; oppRank: number; res: "V" | "E" | "D"; g: number; og: number }[] = [];
-
   for (const m of myMatches) {
     const isA = card.isClub ? m.teamA === lookupId : m.playerA === lookupId;
     const g = isA ? m.golosA : m.golosB;
@@ -52,16 +38,10 @@ function scoreRealCard(cardId: string, allMatches: RealMatch[]): ScoreRow {
     if (!card.isClub) golos += g;
     games.push({ opp: isA ? m.teamB : m.teamA, oppRank: 9, res, g, og });
   }
-
   const base = card.isClub
     ? vit * SCORE_REAL.vit + emp * SCORE_REAL.emp + der * SCORE_REAL.der
     : vit * SCORE_REAL.vit + emp * SCORE_REAL.emp + der * SCORE_REAL.der + golos * SCORE_REAL.golo;
-
-  return {
-    cardId, captain: false, synergy: 0,
-    perf: { vit, emp, der, golos, jogos: games.length, games },
-    base, bonus: 0, fx: effectOf(card), subtotal: base,
-  };
+  return { cardId, captain: false, synergy: 0, perf: { vit, emp, der, golos, jogos: games.length, games }, base, bonus: 0, fx: effectOf(card), subtotal: base };
 }
 
 Deno.serve(async (req: Request) => {
@@ -97,11 +77,9 @@ Deno.serve(async (req: Request) => {
     admin.from("profiles").select("state").eq("id", userId).single(),
     admin.from("liga_data").select("data").eq("key", "config").single(),
   ]);
-
   if (profileRes.error || !profileRes.data) return jsonResponse({ error: "Perfil não encontrado." }, 404);
   const state = (profileRes.data.state ?? {}) as Record<string, unknown>;
   const collection = (state.collection as Record<string, number>) ?? {};
-
   for (const id of lineup as string[]) {
     if (!(collection[id] > 0)) return jsonResponse({ error: "Não tens essa carta na coleção." }, 400);
   }
@@ -112,23 +90,12 @@ Deno.serve(async (req: Request) => {
 
   if (config.modo === "real" && config.fase === "grupos") {
     const jHist = Array.isArray(state.jHist) ? state.jHist as Record<string, unknown>[] : [];
-    const jaJogou = jHist.some((j) =>
-      String(j.etapa) === String(config.etapa) &&
-      j.grupo === config.grupo &&
-      j.fase === config.fase &&
-      j.modo !== "simulacao_fallback"
-    );
+    const jaJogou = jHist.some((j) => String(j.etapa) === String(config.etapa) && j.grupo === config.grupo && j.fase === config.fase && j.modo !== "simulacao_fallback");
     if (jaJogou) return jsonResponse({ error: `Já jogaste o Grupo ${config.grupo} da Etapa ${config.etapa}.` }, 400);
   }
-
-  // FIX v2: guard simétrico para as eliminatórias.
   if (config.modo === "real" && config.fase === "eliminatorias") {
     const jHist = Array.isArray(state.jHist) ? state.jHist as Record<string, unknown>[] : [];
-    const jaJogou = jHist.some((j) =>
-      String(j.etapa) === String(config.etapa) &&
-      j.fase === "eliminatorias" &&
-      j.modo !== "simulacao_fallback"
-    );
+    const jaJogou = jHist.some((j) => String(j.etapa) === String(config.etapa) && j.fase === "eliminatorias" && j.modo !== "simulacao_fallback");
     if (jaJogou) return jsonResponse({ error: `Já jogaste as eliminatórias da ${config.etapa === "finals" ? "Finals" : `Etapa ${config.etapa}`}.` }, 400);
   }
 
@@ -142,25 +109,15 @@ Deno.serve(async (req: Request) => {
     if (config.fase === "grupos") {
       const grupoKey = config.grupo || "A";
       const grupoLabel = `grupo${grupoKey}`;
-
       const [, ...rondasRes] = await Promise.all([
         admin.from("liga_data").select("data").eq("key", `${etapaKey}_grupos`).single(),
-        ...([1, 2, 3, 4, 5].map((r) =>
-          admin.from("liga_data").select("data").eq("key", `${etapaKey}_${grupoLabel}_ronda${r}`).single()
-        )),
+        ...([1, 2, 3, 4, 5].map((r) => admin.from("liga_data").select("data").eq("key", `${etapaKey}_${grupoLabel}_ronda${r}`).single())),
       ]);
-
       let allMatches: RealMatch[] = [];
-      for (const r of rondasRes) {
-        if (r.data?.data) allMatches = allMatches.concat(r.data.data as RealMatch[]);
-      }
-
-      if (allMatches.length === 0) {
-        return jsonResponse({ error: `Dados do Grupo ${config.grupo} ainda não disponíveis. Contacta o admin para sincronizar.` }, 400);
-      }
+      for (const r of rondasRes) { if (r.data?.data) allMatches = allMatches.concat(r.data.data as RealMatch[]); }
+      if (allMatches.length === 0) return jsonResponse({ error: `Dados do Grupo ${config.grupo} ainda não disponíveis. Contacta o admin para sincronizar.` }, 400);
 
       rows = (lineup as string[]).map((id, i) => { const r = scoreRealCard(id, allMatches); r.captain = i === captain; return r; });
-
       for (const r of rows) {
         const fx = r.fx;
         if (fx.tipo === "artilheiro") r.bonus = r.perf.golos * fx.mag;
@@ -183,7 +140,6 @@ Deno.serve(async (req: Request) => {
       }
       rows.forEach((r) => { r.subtotal = (r.base + r.bonus + r.synergy) * (r.captain ? 2 : 1); });
       total = rows.reduce((s, r) => s + r.subtotal, 0);
-
     } else {
       let allMatches: RealMatch[] = [];
       if (etapaKey === "finals") {
@@ -201,13 +157,9 @@ Deno.serve(async (req: Request) => {
           ...((finalRes.data?.data as RealMatch[]) ?? []),
         ];
       }
-
-      if (allMatches.length === 0) {
-        return jsonResponse({ error: "Dados das eliminatórias ainda não disponíveis. Contacta o admin para sincronizar." }, 400);
-      }
+      if (allMatches.length === 0) return jsonResponse({ error: "Dados das eliminatórias ainda não disponíveis. Contacta o admin para sincronizar." }, 400);
 
       rows = (lineup as string[]).map((id, i) => { const r = scoreRealCard(id, allMatches); r.captain = i === captain; return r; });
-
       for (const r of rows) {
         const fx = r.fx;
         if (fx.tipo === "artilheiro") r.bonus = r.perf.golos * fx.mag;

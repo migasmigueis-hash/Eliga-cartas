@@ -1,21 +1,5 @@
-// supabase/functions/previsoes-validar-todos/index.ts v3
-//
-// MOMENTO de admin #2 ("Avaliar" depois de a eliminatória ser jogada).
-//
-// Pontua a previsão da ELIMINATÓRIA de TODOS os utilizadores, usando os
-// resultados reais inseridos em liga_data (etapaN_qf/sf/final, com golos; ou
-// finals_jogos para as Finals).
-//
-// Pré-requisitos por utilizador:
-//   - prev.bracket (8 equipas reais, vindas do Avaliar #1) e prev.fin definido.
-//   - prev.resolved ainda null (não pontuado).
-//
-// FIX v3:
-//   - Comparação POSICIONAL limpa: como prev.bracket são as 8 equipas reais (todas
-//     iguais entre jogadores, vindas do admin), rqf/rsf são calculados a partir
-//     dessa bracket e comparados posição-a-posição com qf/sf do jogador.
-//   - qualPts vem de prev.groupResult.qualHits (já revelado no Avaliar #1).
-//   - Escreve prev.resolved e limpa prev.bracketLocked.
+// supabase/functions/previsoes-validar-todos/index.ts  (legado — o cliente usa previsoes-avaliar)
+// Avaliar #2: pontua a previsão da eliminatória de todos com os resultados reais.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -28,7 +12,6 @@ function knockoutWinner(matches: KnockoutMatch[], a: string, b: string): string 
   if (!m) return null;
   return m.golosA > m.golosB ? m.teamA : m.golosB > m.golosA ? m.teamB : m.teamA;
 }
-
 function seriesWinner(jogos: KnockoutMatch[], a: string, b: string): string {
   let wA = 0, wB = 0;
   for (const m of jogos) {
@@ -62,7 +45,6 @@ Deno.serve(async (req: Request) => {
   const etapaKey = config.etapa === "finals" ? "finals" : `etapa${config.etapa}`;
   const isFinals = config.etapa === "finals";
 
-  // carregar resultados reais da eliminatória
   let qfM: KnockoutMatch[] = [], sfM: KnockoutMatch[] = [], finM: KnockoutMatch[] = [], finalsJogos: KnockoutMatch[] = [];
   if (isFinals) {
     const { data: jr } = await admin.from("liga_data").select("data").eq("key", "finals_jogos").single();
@@ -78,7 +60,7 @@ Deno.serve(async (req: Request) => {
     sfM = (sfR.data?.data ?? []) as KnockoutMatch[];
     finM = (finR.data?.data ?? []) as KnockoutMatch[];
     if (qfM.length < 4 || sfM.length < 2 || finM.length < 1) {
-      return jsonResponse({ error: "Resultados das eliminatórias incompletos (precisas de QF, MF e Final com golos). Sincroniza primeiro." }, 400);
+      return jsonResponse({ error: "Resultados das eliminatórias incompletos. Sincroniza primeiro." }, 400);
     }
   }
 
@@ -88,31 +70,26 @@ Deno.serve(async (req: Request) => {
   for (const profile of profiles ?? []) {
     const state = (profile.state ?? {}) as Record<string, unknown>;
     const prev = (state.prev ?? {}) as Record<string, unknown>;
-    const bracket = prev.bracket as string[] | undefined;
+    const br = prev.bracket as string[] | undefined;
     const qfArr = (prev.qf as (string | null)[]) ?? [];
     const sfArr = (prev.sf as (string | null)[]) ?? [];
     const fin = prev.fin as string | undefined;
 
-    if (!Array.isArray(bracket) || bracket.length !== 8 || !fin || prev.resolved) { skipped++; continue; }
+    if (!Array.isArray(br) || br.length !== 8 || !fin || prev.resolved) { skipped++; continue; }
     if (qfArr.length !== 4 || qfArr.some((q) => !q) || sfArr.length !== 2 || sfArr.some((s) => !s)) { skipped++; continue; }
 
-    // vencedores reais, calculados sobre a bracket real do jogador (posicional)
     let rqf: string[], rsf: string[], rchamp: string;
     if (isFinals) {
       rqf = [
-        seriesWinner(finalsJogos, bracket[0], bracket[1]),
-        seriesWinner(finalsJogos, bracket[2], bracket[3]),
-        seriesWinner(finalsJogos, bracket[4], bracket[5]),
-        seriesWinner(finalsJogos, bracket[6], bracket[7]),
+        seriesWinner(finalsJogos, br[0], br[1]), seriesWinner(finalsJogos, br[2], br[3]),
+        seriesWinner(finalsJogos, br[4], br[5]), seriesWinner(finalsJogos, br[6], br[7]),
       ];
       rsf = [seriesWinner(finalsJogos, rqf[0], rqf[1]), seriesWinner(finalsJogos, rqf[2], rqf[3])];
       rchamp = seriesWinner(finalsJogos, rsf[0], rsf[1]);
     } else {
       rqf = [
-        knockoutWinner(qfM, bracket[0], bracket[1]) ?? bracket[0],
-        knockoutWinner(qfM, bracket[2], bracket[3]) ?? bracket[2],
-        knockoutWinner(qfM, bracket[4], bracket[5]) ?? bracket[4],
-        knockoutWinner(qfM, bracket[6], bracket[7]) ?? bracket[6],
+        knockoutWinner(qfM, br[0], br[1]) ?? br[0], knockoutWinner(qfM, br[2], br[3]) ?? br[2],
+        knockoutWinner(qfM, br[4], br[5]) ?? br[4], knockoutWinner(qfM, br[6], br[7]) ?? br[6],
       ];
       rsf = [knockoutWinner(sfM, rqf[0], rqf[1]) ?? rqf[0], knockoutWinner(sfM, rqf[2], rqf[3]) ?? rqf[2]];
       rchamp = knockoutWinner(finM, rsf[0], rsf[1]) ?? rsf[0];
@@ -121,7 +98,6 @@ Deno.serve(async (req: Request) => {
     const qfHits = (qfArr as string[]).filter((w, i) => w === rqf[i]).length;
     const sfHits = (sfArr as string[]).filter((w, i) => w === rsf[i]).length;
     const champOk = fin === rchamp;
-
     const gr = (prev.groupResult ?? {}) as Record<string, unknown>;
     const isFinalsPrev = gr.isFinals === true;
     const qualPts = isFinalsPrev ? 0 : ((gr.qualHits as number) ?? 0) * 10;

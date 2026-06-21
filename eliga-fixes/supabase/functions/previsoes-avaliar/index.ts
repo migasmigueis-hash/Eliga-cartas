@@ -1,14 +1,16 @@
-// supabase/functions/previsoes-avaliar/index.ts v3
+// supabase/functions/previsoes-avaliar/index.ts v2 (botão único de admin)
 //
-// Botão único de admin. Deteta: "grupos" (revela apurados) ou "elim" (valida).
-// - Soma pontos eLiga ao ranking partilhado (leaderboard).
-// - Credita pontos Twitch (bónus).
-// - Carimba prev.cfgRef para deteção de nova etapa no cliente.
-// - Ao validar eliminatórias, grava um registo em state.prevHist (histórico por fase).
+// Um só endpoint para os DOIS momentos de avaliação. O servidor decide sozinho:
+//   • "grupos" → Avaliar #1: revela apurados (qualHits) + popula a bracket real.
+//   • "elim"   → Avaliar #2: pontua a eliminatória com resultados reais.
+//
+// Recompensa por fase (pack + pontos Twitch creditados automaticamente).
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
 
+// ---------------------------------------------------------------------------
+// TIERS DE RECOMPENSA (pack + pontos Twitch) — ajusta os valores à vontade.
 function groupRewardFor(qualHits: number): { pack: string | null; twitch: number } {
   if (qualHits >= 7) return { pack: "finals", twitch: 150 };
   if (qualHits >= 5) return { pack: "finals", twitch: 100 };
@@ -23,12 +25,14 @@ function elimRewardFor(elimPts: number): { pack: string | null; twitch: number }
   if (elimPts >= 10) return { pack: "base", twitch: 25 };
   return { pack: null, twitch: 0 };
 }
+// ---------------------------------------------------------------------------
 
 interface KnockoutMatch { teamA: string; teamB: string; golosA: number; golosB: number; }
-function knockoutWinner(m: KnockoutMatch[], a: string, b: string): string | null {
-  const x = m.find((y) => (y.teamA === a && y.teamB === b) || (y.teamA === b && y.teamB === a));
-  if (!x) return null;
-  return x.golosA > x.golosB ? x.teamA : x.golosB > x.golosA ? x.teamB : x.teamA;
+
+function knockoutWinner(matches: KnockoutMatch[], a: string, b: string): string | null {
+  const m = matches.find((x) => (x.teamA === a && x.teamB === b) || (x.teamA === b && x.teamB === a));
+  if (!m) return null;
+  return m.golosA > m.golosB ? m.teamA : m.golosB > m.golosA ? m.teamB : m.teamA;
 }
 function seriesWinner(jogos: KnockoutMatch[], a: string, b: string): string {
   let wA = 0, wB = 0;
@@ -65,14 +69,15 @@ Deno.serve(async (req: Request) => {
   const config = (configRow?.data ?? { etapa: 1 }) as { etapa: number | string };
   const isFinals = config.etapa === "finals";
   const etapaKey = isFinals ? "finals" : `etapa${config.etapa}`;
-  const etapaLabel = isFinals ? "Finals" : `Etapa ${config.etapa}`;
 
-  // soma pontos eLiga ao ranking partilhado
+  // soma "pontos eLiga" ao ranking partilhado (mesma escala da Competição).
+  // idempotente: cada fase só credita uma vez (reveal/validate só processam quem ainda não foi).
   async function addEligaPoints(uname: string | null, uid: string, pts: number) {
     if (!uname || pts <= 0) return;
     const { data: row } = await admin.from("leaderboard").select("score, jornadas").eq("username", uname).maybeSingle();
+    const newScore = ((row?.score as number) ?? 0) + pts;
     await admin.from("leaderboard").upsert(
-      { username: uname, user_id: uid, score: ((row?.score as number) ?? 0) + pts, jornadas: (row?.jornadas as number) ?? 0, updated_at: new Date().toISOString() },
+      { username: uname, user_id: uid, score: newScore, jornadas: (row?.jornadas as number) ?? 0, updated_at: new Date().toISOString() },
       { onConflict: "username" }
     );
   }
@@ -80,7 +85,7 @@ Deno.serve(async (req: Request) => {
   const { data: profiles } = await admin.from("profiles").select("id, state, twitch_points, username");
   const allProfiles = profiles ?? [];
 
-  // bracket real (8 equipas)
+  // bracket real (8 equipas) da etapa, se existir
   let bracket: string[] = [];
   if (!isFinals) {
     for (const key of [`${etapaKey}_qf`, `${etapaKey}_bracket`]) {
@@ -92,21 +97,24 @@ Deno.serve(async (req: Request) => {
 
   const needsReveal = (prev: Record<string, unknown>) => {
     const gr = (prev.groupResult ?? null) as Record<string, unknown> | null;
-    return Array.isArray(prev.qual) && (prev.qual as unknown[]).length === 8 && (!gr || gr.realQual == null) && !prev.resolved;
+    return Array.isArray(prev.qual) && (prev.qual as unknown[]).length === 8 &&
+      (!gr || gr.realQual == null) && !prev.resolved;
   };
   const pendingReveal = allProfiles.filter((p) => needsReveal((p.state as any)?.prev ?? {})).length;
 
-  // ===== MODO grupos =====
+  // =================== MODO "grupos" ===================
   if (!isFinals && pendingReveal > 0) {
     if (bracket.length !== 8) {
-      return jsonResponse({ error: `Há ${pendingReveal} previsão(ões) de grupos por revelar, mas o bracket real ainda não está em ${etapaKey}_qf. Insere os 4 confrontos QF primeiro.` }, 400);
+      return jsonResponse({ error: `Há ${pendingReveal} previsão(ões) de grupos por revelar, mas o bracket real ainda não está em ${etapaKey}_qf (preciso dos 4 confrontos QF). Insere-o primeiro.` }, 400);
     }
     const realQual = [...new Set(bracket)];
     let revealed = 0, skipped = 0;
+
     for (const profile of allProfiles) {
       const state = (profile.state ?? {}) as Record<string, unknown>;
       const prev = (state.prev ?? {}) as Record<string, unknown>;
       if (!needsReveal(prev)) { skipped++; continue; }
+
       const qualArr = prev.qual as string[];
       const qualHits = qualArr.filter((id) => realQual.includes(id)).length;
       const reward = groupRewardFor(qualHits);
@@ -118,26 +126,19 @@ Deno.serve(async (req: Request) => {
         resolved: null, bracketLocked: false, rewardClaimed: false,
         groupReward: { pack: reward.pack, twitch: reward.twitch },
         groupRewardClaimed: false,
-        cfgRef: `${config.etapa}-eliminatorias`, // já avança a referência para a fase seguinte
       };
-      // histórico da FASE DE GRUPOS (linha própria na tabela "As tuas previsões")
-      const prevHistG = Array.isArray((state as any).prevHist) ? [...(state as any).prevHist] : [];
-      // evitar duplicar se já existir registo de grupos desta etapa
-      const jaTem = prevHistG.some((h: any) => h.fase === "grupos" && String(h.etapa) === String(config.etapa));
-      if (!jaTem) {
-        prevHistG.unshift({ label: `${etapaLabel} · Fase de Grupos`, etapa: config.etapa, fase: "grupos", qualHits, score: qualHits * 10, qual: qualArr, realQual, t: Date.now() });
-      }
       const curTwitch = (profile.twitch_points as number) ?? 0;
-      const upd: Record<string, unknown> = { state: { ...state, prev: newPrev, prevHist: prevHistG.slice(0, 30) }, updated_at: new Date().toISOString() };
+      const upd: Record<string, unknown> = { state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() };
       if (reward.twitch > 0) upd.twitch_points = curTwitch + reward.twitch;
       await admin.from("profiles").update(upd).eq("id", profile.id);
+      // pontos eLiga (ranking): apurados certos × 10
       await addEligaPoints((profile.username as string) ?? null, profile.id as string, qualHits * 10);
       revealed++;
     }
     return jsonResponse({ ok: true, mode: "grupos", revealed, skipped, realQual });
   }
 
-  // ===== MODO elim =====
+  // =================== MODO "elim" ===================
   let qfM: KnockoutMatch[] = [], sfM: KnockoutMatch[] = [], finM: KnockoutMatch[] = [], finalsJogos: KnockoutMatch[] = [];
   if (isFinals) {
     const { data: jr } = await admin.from("liga_data").select("data").eq("key", "finals_jogos").single();
@@ -171,11 +172,17 @@ Deno.serve(async (req: Request) => {
 
     let rqf: string[], rsf: string[], rchamp: string;
     if (isFinals) {
-      rqf = [seriesWinner(finalsJogos, br[0], br[1]), seriesWinner(finalsJogos, br[2], br[3]), seriesWinner(finalsJogos, br[4], br[5]), seriesWinner(finalsJogos, br[6], br[7])];
+      rqf = [
+        seriesWinner(finalsJogos, br[0], br[1]), seriesWinner(finalsJogos, br[2], br[3]),
+        seriesWinner(finalsJogos, br[4], br[5]), seriesWinner(finalsJogos, br[6], br[7]),
+      ];
       rsf = [seriesWinner(finalsJogos, rqf[0], rqf[1]), seriesWinner(finalsJogos, rqf[2], rqf[3])];
       rchamp = seriesWinner(finalsJogos, rsf[0], rsf[1]);
     } else {
-      rqf = [knockoutWinner(qfM, br[0], br[1]) ?? br[0], knockoutWinner(qfM, br[2], br[3]) ?? br[2], knockoutWinner(qfM, br[4], br[5]) ?? br[4], knockoutWinner(qfM, br[6], br[7]) ?? br[6]];
+      rqf = [
+        knockoutWinner(qfM, br[0], br[1]) ?? br[0], knockoutWinner(qfM, br[2], br[3]) ?? br[2],
+        knockoutWinner(qfM, br[4], br[5]) ?? br[4], knockoutWinner(qfM, br[6], br[7]) ?? br[6],
+      ];
       rsf = [knockoutWinner(sfM, rqf[0], rqf[1]) ?? rqf[0], knockoutWinner(sfM, rqf[2], rqf[3]) ?? rqf[2]];
       rchamp = knockoutWinner(finM, rsf[0], rsf[1]) ?? rsf[0];
     }
@@ -183,10 +190,10 @@ Deno.serve(async (req: Request) => {
     const qfHits = (qfArr as string[]).filter((w, i) => w === rqf[i]).length;
     const sfHits = (sfArr as string[]).filter((w, i) => w === rsf[i]).length;
     const champOk = fin === rchamp;
+
     const gr = (prev.groupResult ?? {}) as Record<string, unknown>;
     const isFinalsPrev = gr.isFinals === true;
-    const qualHits = isFinalsPrev ? null : ((gr.qualHits as number) ?? 0);
-    const qualPts = isFinalsPrev ? 0 : (qualHits as number) * 10;
+    const qualPts = isFinalsPrev ? 0 : ((gr.qualHits as number) ?? 0) * 10;
     const elimPts = qfHits * 10 + sfHits * 15 + (champOk ? 50 : 0);
     const score = qualPts + elimPts;
     const reward = elimRewardFor(elimPts);
@@ -194,19 +201,14 @@ Deno.serve(async (req: Request) => {
     const newPrev = {
       ...prev,
       bracketLocked: false,
-      cfgRef: `${config.etapa}-eliminatorias`,
       resolved: { rqf, rsf, champ: rchamp, qfHits, sfHits, champOk, score, rewardPack: reward.pack, twitch: reward.twitch },
       rewardClaimed: false,
     };
-
-    // histórico por fase (para a tabela na tab Previsões)
-    const prevHist = Array.isArray((state as any).prevHist) ? [...(state as any).prevHist] : [];
-    prevHist.unshift({ label: `${etapaLabel} · Eliminatórias`, etapa: config.etapa, fase: "elim", qfHits, sfHits, champOk, score: elimPts, t: Date.now() });
-
     const curTwitch = (profile.twitch_points as number) ?? 0;
-    const upd: Record<string, unknown> = { state: { ...state, prev: newPrev, prevHist: prevHist.slice(0, 30) }, updated_at: new Date().toISOString() };
+    const upd: Record<string, unknown> = { state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() };
     if (reward.twitch > 0) upd.twitch_points = curTwitch + reward.twitch;
     await admin.from("profiles").update(upd).eq("id", profile.id);
+    // pontos eLiga (ranking): pontos da eliminatória (QF×10 + MF×15 + Campeão×50)
     await addEligaPoints((profile.username as string) ?? null, profile.id as string, elimPts);
     resolved++;
   }

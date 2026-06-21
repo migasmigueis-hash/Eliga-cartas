@@ -1,14 +1,9 @@
 // supabase/functions/previsoes-iniciar/index.ts v2
 //
-// Modo real + Finals: carrega as 8 equipas e salta para a bracket (sem grupos).
-// Modo real + etapa N (grupos): carrega os grupos reais da etapa.
-// Modo real + etapa N (eliminatorias): bracket directo para quem nunca previu os
-//   grupos (late-joiner) — NUNCA cai para a lógica de grupos.
+// Modo real + Finals: bracket extraído de finals_jogos (sem grupos).
+// Modo real + etapa N (grupos): carrega os grupos reais.
+// Modo real + etapa N (eliminatorias): bracket directo; NUNCA cai para grupos.
 // Modo simulação: sorteia grupos aleatoriamente.
-//
-// FIX v2 (Bug 2 — Previsões mostra grupos estando em eliminatórias):
-//   - a fase "eliminatorias" nunca cai para grupos; se o bracket não estiver
-//     sincronizado, devolve erro claro em vez de mostrar "Quem passa aos quartos".
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -39,7 +34,6 @@ Deno.serve(async (req: Request) => {
   const state = (profileRes.data.state ?? {}) as Record<string, unknown>;
   const config = (configRes.data?.data ?? { modo: "simulacao", etapa: 1 }) as { modo: string; etapa: number | string; fase?: string };
 
-  // Finals em modo real: bracket extraído dos finals_jogos
   if (config.modo === "real" && config.etapa === "finals") {
     const [, finalsJogosRow] = await Promise.all([
       admin.from("liga_data").select("data").eq("key", "finals_grupos").single(),
@@ -64,7 +58,6 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ prev, modo: "real_finals" });
   }
 
-  // Modo real + eliminatórias: bracket directo, SEM fallback para grupos.
   if (config.modo === "real" && config.fase === "eliminatorias") {
     const etapaKey = `etapa${config.etapa}`;
     let bracket: string[] = [];
@@ -89,7 +82,6 @@ Deno.serve(async (req: Request) => {
     }, 400);
   }
 
-  // Fase de grupos (real ou simulação)
   let groups: string[][];
   let modoUsado = config.modo;
 
