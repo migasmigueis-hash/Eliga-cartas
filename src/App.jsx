@@ -1146,6 +1146,9 @@ function App() {
   const [meta, setMeta] = useState({ dias: [], packs: {}, claims: {}, pity: 0 });
   const [tradePreview, setTradePreview] = useState(null);
   const [lineup, setLineup] = useState([null, null, null]);
+  const [compSubmit, setCompSubmit] = useState(null); // equipa submetida da fase atual (pendente)
+  const [adminCompLog, setAdminCompLog] = useState(null);
+  const [adminCompAvaliando, setAdminCompAvaliando] = useState(false);
   const [captain, setCaptain] = useState(null);
   const [pickSlot, setPickSlot] = useState(null);
   const [compResult, setCompResult] = useState(null);
@@ -1307,8 +1310,10 @@ function App() {
       setMeta({ dias: dias.includes(t) ? dias : [...dias, t].slice(-90), packs: m.packs || {}, claims: m.claims || {}, pity: m.pity || 0, trocas: m.trocas || {}, escUso: m.escUso || {}, trivia: m.trivia || {} });
 
       const lin = st.lineup || {};
-      setLineup(lin.ids || [null, null, null]);
-      setCaptain(lin.captain ?? null);
+      const cs = st.compSubmit || null;
+      setCompSubmit(cs);
+      if (cs && Array.isArray(cs.lineup)) { setLineup(cs.lineup); setCaptain(cs.captain ?? null); }
+      else { setLineup(lin.ids || [null, null, null]); setCaptain(lin.captain ?? null); }
 
       setHist(st.hist || []);
       setCodesUsed(st.codesUsed || []);
@@ -1342,6 +1347,7 @@ function App() {
       prevHist: prevHist.slice(0, 30),
       vitrine,
       prev,
+      compSubmit,
       muted,
       onboardDone: onboardStep === null,
     };
@@ -1350,7 +1356,7 @@ function App() {
         .then(({ error }) => { if (error) console.error("Erro ao guardar progresso:", error.message); });
     }, 600);
     return () => clearTimeout(t);
-  }, [collection, meta, lineup, captain, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, prevHist, muted, onboardStep, username, userId]);
+  }, [collection, meta, lineup, captain, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, prevHist, compSubmit, muted, onboardStep, username, userId]);
 
 
   const linkTwitch = async () => {
@@ -1364,7 +1370,7 @@ function App() {
 
   const logout = async () => {
     await supabase.auth.signOut();
-    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
+    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
   const addCards = (cards) => setCollection((prev) => {
@@ -1532,37 +1538,61 @@ function App() {
   const grupoAtual = ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos" ? ligaConfig.grupo : null;
   const faseAtual = ligaConfig?.modo === "real" ? ligaConfig.fase : null;
   const etapaAtual = ligaConfig?.etapa === "finals" ? "finals" : parseInt(ligaConfig?.etapa);
+  // já foi AVALIADA (tem entrada no jHist) a fase atual?
   const jaJogouGrupoAtual = ligaConfig?.modo === "real"
     ? grupoAtual
-      ? jHist.some((j) => String(j.etapa) === String(etapaAtual) && j.grupo === grupoAtual && j.modo !== "simulacao_fallback")
+      ? jHist.some((j) => String(j.etapa) === String(etapaAtual) && (j.grupo || "A") === (grupoAtual || "A") && j.fase === "grupos" && j.modo !== "simulacao_fallback")
       : faseAtual === "eliminatorias"
         ? jHist.some((j) => String(j.etapa) === String(etapaAtual) && j.fase === "eliminatorias" && j.modo !== "simulacao_fallback")
         : false
     : jHist.length >= JORNADA_LIMIT;
-  const simulateJornada = async () => {
+
+  // ---- prazos da COMPETIÇÃO (config: prazoCompGrupos / prazoCompElim) ----
+  const prazoCompMs = ligaConfig?.modo === "real"
+    ? (faseAtual === "grupos" ? (ligaConfig?.prazoCompGrupos ? new Date(ligaConfig.prazoCompGrupos).getTime() : null)
+                              : (ligaConfig?.prazoCompElim ? new Date(ligaConfig.prazoCompElim).getTime() : null))
+    : null;
+  const compExpirado = prazoCompMs != null && !isNaN(prazoCompMs) && now > prazoCompMs;
+  const compSubmitDaFaseAtual = !!(compSubmit && String(compSubmit.etapa) === String(etapaAtual) &&
+    (faseAtual === "grupos" ? compSubmit.fase === "grupos" && (compSubmit.grupo || "A") === (grupoAtual || "A") : compSubmit.fase === "eliminatorias"));
+
+  // submeter a equipa (sem calcular pontos — o admin avalia depois)
+  const submeterJornada = async () => {
+    if (!lineupReady || captain === null) return;
+    if (compExpirado) { setToast("O prazo para submeter a equipa desta fase já terminou."); setTimeout(() => setToast(null), 2800); return; }
+    const { data, message } = await invokeFn("submeter-jornada", { lineup, captain }, "Não foi possível submeter a equipa.");
+    if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
+    setCompSubmit(data.compSubmit);
+    setToast("✓ Equipa submetida! Podes alterá-la até ao prazo."); setTimeout(() => setToast(null), 3000);
+    playFx("flip", muted);
+  };
+  const alterarJornada = () => {
+    if (compExpirado) { setToast("O prazo já terminou — não podes alterar."); setTimeout(() => setToast(null), 2600); return; }
+    setCompSubmit(null);
+    setToast("Equipa reaberta — ajusta e volta a submeter."); setTimeout(() => setToast(null), 2600);
+  };
+  // modo SIMULAÇÃO: calcula na hora
+  const jogarSimulacao = async () => {
     if (!lineupFull || captain === null) return;
-    if (jaJogouGrupoAtual) {
-      setToast(grupoAtual ? `Já jogaste o Grupo ${grupoAtual} desta etapa.` : "Limite de jornadas atingido.");
-      setTimeout(() => setToast(null), 2800);
-      return;
-    }
+    if (jHist.length >= JORNADA_LIMIT) { setToast("Limite de jornadas atingido."); setTimeout(() => setToast(null), 2800); return; }
     const { data, message } = await invokeFn("play-jornada", { lineup, captain }, "Não foi possível registar a jornada. Tenta novamente.");
-    if (message) {
-      setToast(message.replace(/^LIMITE_JORNADAS:\s*/, "")); setTimeout(() => setToast(null), 2800);
-      return;
-    }
+    if (message) { setToast(message.replace(/^LIMITE_JORNADAS:\s*/, "")); setTimeout(() => setToast(null), 2800); return; }
     const rows = data.rows.map((r) => ({
-      ...r,
-      card: POOL.find((c) => c.id === r.cardId),
+      ...r, card: POOL.find((c) => c.id === r.cardId),
       perf: { ...r.perf, games: r.perf.games.map((g) => ({ ...g, opp: TEAMS.find((t) => t.id === g.opp) || { id: g.opp, name: g.opp } })) },
     }));
     setCompResult({ rows, total: data.total, j: data.j });
     setJHist(data.jHist);
-    if (data.leaderboard) {
-      const scores = {}, jornadasMap = {};
-      data.leaderboard.forEach((r) => { scores[r.username] = r.score; jornadasMap[r.username] = r.jornadas; });
-      setRank({ scores, jornadas: jornadasMap });
-    }
+    if (data.leaderboard) { const scores = {}, jm = {}; data.leaderboard.forEach((r) => { scores[r.username] = r.score; jm[r.username] = r.jornadas; }); setRank({ scores, jornadas: jm }); }
+  };
+  // ver o detalhe de uma jornada já avaliada (rows guardadas no jHist)
+  const verDetalheJornada = (e) => {
+    if (!e.rows) { setToast("Sem detalhe guardado para esta jornada."); setTimeout(() => setToast(null), 2200); return; }
+    const rows = e.rows.map((r) => ({
+      ...r, card: POOL.find((c) => c.id === r.cardId),
+      perf: { ...r.perf, games: (r.perf?.games || []).map((g) => ({ ...g, opp: TEAMS.find((t) => t.id === g.opp) || { id: g.opp, name: g.opp } })) },
+    }));
+    setCompResult({ rows, total: e.total, j: e.j, label: e.label });
   };
   const pickCard = (card) => {
     if (pickSlot === null) return;
@@ -1657,6 +1687,7 @@ function App() {
   // reais" não possam ser fabricados pelo cliente)
   const drawGroups = async () => {
     if (prev.resolved) return;
+    if (previsaoFaseJaFeita) { setToast("Já fizeste a previsão desta fase. Aguarda que o admin avance para a fase seguinte."); setTimeout(() => setToast(null), 3200); return; }
     const { data, message } = await invokeFn("previsoes-iniciar", {}, "Não foi possível sortear os grupos. Tenta novamente.");
     if (message) { setToast(message); setTimeout(() => setToast(null), 2600); return; }
     setPrev(data.prev);
@@ -1733,6 +1764,7 @@ function App() {
   const clearPrev = () => setPrev(EMPTY_PREV);
   // começar uma nova previsão: limpa a anterior e carrega já a da etapa/fase atual
   const novaPrevisao = async () => {
+    if (previsaoFaseJaFeita) { setToast("Já fizeste a previsão desta fase. Aguarda que o admin avance para a fase seguinte."); setTimeout(() => setToast(null), 3200); return; }
     setPrev(EMPTY_PREV);
     const { data, message } = await invokeFn("previsoes-iniciar", {}, "Não foi possível carregar a nova previsão.");
     if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
@@ -1748,6 +1780,13 @@ function App() {
   // diferir, há uma nova etapa disponível.
   const cfgKeyAtual = ligaConfig ? `${ligaConfig.etapa}-${ligaConfig.fase}` : null;
   const novaEtapaDisponivel = !!(prev.resolved && cfgKeyAtual && prev.cfgRef && prev.cfgRef !== cfgKeyAtual);
+
+  // a previsão da fase ATUAL já foi feita/avaliada no passado? (impede repetir uma
+  // fase já jogada — ex.: admin escolhe por engano uma etapa/fase anterior)
+  const previsaoFaseJaFeita = ligaConfig?.modo === "real" && (() => {
+    const faseKey = ligaConfig?.fase === "grupos" ? "grupos" : "elim";
+    return prevHist.some((h) => String(h.etapa) === String(ligaConfig?.etapa) && h.fase === faseKey);
+  })();
 
   // ---- Painel Admin: Liga ----
   const adminPasteTextareaRef = useRef(null);
@@ -1808,9 +1847,32 @@ function App() {
     setToast("Configuração guardada."); setTimeout(() => setToast(null), 1800);
   };
 
+  // auto-correção: se o config está em "grupos" sem grupo válido ("?"), persiste "A"
+  // automaticamente (só admin) — garante que a configuração nunca fica indefinida.
+  const healedGrupoRef = useRef(false);
+  useEffect(() => {
+    if (!isAdmin || !ligaConfig || healedGrupoRef.current) return;
+    if (ligaConfig.modo === "real" && ligaConfig.fase === "grupos" && !["A", "B", "C"].includes(ligaConfig.grupo)) {
+      healedGrupoRef.current = true;
+      adminSaveConfig({ grupo: "A" });
+    }
+  }, [isAdmin, ligaConfig]);
+
   // admin: reinicia o ranking partilhado e o histórico "As tuas jornadas" de TODOS os jogadores
   // Avaliação de previsões: um único botão que deteta sozinho (no servidor) se há
   // grupos por revelar (Avaliar #1) ou eliminatórias por validar (Avaliar #2).
+  const adminAvaliarCompeticao = async () => {
+    setAdminCompAvaliando(true); setAdminCompLog(null);
+    const { data, message } = await invokeFn("avaliar-competicao", {}, "Não foi possível avaliar a competição.");
+    setAdminCompAvaliando(false);
+    if (message) { setAdminCompLog({ ok: false, error: message }); setToast(message); setTimeout(() => setToast(null), 3200); return; }
+    setAdminCompLog({ ok: true, ...data });
+    setToast(`⚽ Competição avaliada: ${data.evaluated} jogador(es) pontuado(s).`); setTimeout(() => setToast(null), 4000);
+    try {
+      const { data: prof } = await supabase.from("profiles").select("state").eq("id", userId).single();
+      if (prof?.state) { setJHist(prof.state.jHist || []); setCompSubmit(prof.state.compSubmit || null); }
+    } catch (e) { /* ignora */ }
+  };
   const adminAvaliarPrevisoes = async () => {
     setAdminAvaliando(true);
     setAdminAvalLog(null);
@@ -2263,7 +2325,7 @@ function App() {
           {ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos" && (
             <div style={{ marginTop: 10, display: "inline-flex", alignItems: "center", gap: 8, background: "#1BF5A314", border: "1px solid #1BF5A344", borderRadius: 99, padding: "6px 14px" }}>
               <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12, color: "#1BF5A3", letterSpacing: 1 }}>
-                {ligaConfig.etapa === "finals" ? "FINALS" : `ETAPA ${ligaConfig.etapa}`} · GRUPO {ligaConfig.grupo || "?"}
+                {ligaConfig.etapa === "finals" ? "FINALS" : `ETAPA ${ligaConfig.etapa}`} · GRUPO {ligaConfig.grupo || "A"}
               </span>
               <span style={{ fontSize: 12, color: "#6f87a8" }}>· 5 rondas hoje</span>
             </div>
@@ -2363,22 +2425,62 @@ function App() {
                 ⚠ Uma ou mais cartas da tua equipa não jogam hoje. Substitui-as antes de jogar.
               </div>
             )}
-            <button onClick={simulateJornada} disabled={!lineupReady || captain === null || jaJogouGrupoAtual}
-              style={{ ...btn(lineupReady && captain !== null && !jaJogouGrupoAtual), opacity: lineupReady && captain !== null && !jaJogouGrupoAtual ? 1 : 0.35, cursor: lineupReady && captain !== null && !jaJogouGrupoAtual ? "pointer" : "not-allowed", fontSize: 14, padding: "14px 30px" }}>
-              {jaJogouGrupoAtual
-                ? grupoAtual ? `✓ Grupo ${grupoAtual} jogado` : faseAtual === "eliminatorias" ? "✓ Eliminatórias jogadas" : "Já jogaste todos os grupos"
-                : hasIneligible ? "Substitui as cartas inelegíveis"
-                : !lineupFull ? "Escolhe 3 cartas para jogar"
-                : captain === null ? "Escolhe um capitão (×2) primeiro"
-                : ligaConfig?.modo === "real" && ligaConfig?.fase === "grupos"
-                  ? `▶ Jogar ${ligaConfig.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig.etapa}`} · Grupo ${ligaConfig.grupo || "A"}`
-                  : ligaConfig?.modo === "real" && ligaConfig?.fase === "eliminatorias"
-                    ? `▶ Jogar Eliminatórias — ${ligaConfig.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig.etapa}`}`
-                    : `▶ Simular jornada ${jHist.length + 1}`}
-            </button>
-            {jaJogouGrupoAtual && grupoAtual && (
-              <div style={{ color: "#1BF5A3", fontSize: 12, textAlign: "center", maxWidth: 360 }}>
-                ✓ Já jogaste o Grupo {grupoAtual}. Aguarda que o admin mude para o Grupo seguinte.
+            {/* MODO SIMULAÇÃO: calcula na hora */}
+            {ligaConfig?.modo !== "real" && (
+              <button onClick={jogarSimulacao} disabled={!lineupReady || captain === null || jHist.length >= JORNADA_LIMIT}
+                style={{ ...btn(lineupReady && captain !== null && jHist.length < JORNADA_LIMIT), opacity: lineupReady && captain !== null && jHist.length < JORNADA_LIMIT ? 1 : 0.35, cursor: "pointer", fontSize: 14, padding: "14px 30px" }}>
+                {jHist.length >= JORNADA_LIMIT ? "Limite de jornadas atingido"
+                  : !lineupFull ? "Escolhe 3 cartas para jogar"
+                  : captain === null ? "Escolhe um capitão (×2) primeiro"
+                  : `▶ Simular jornada ${jHist.length + 1}`}
+              </button>
+            )}
+
+            {/* MODO REAL: submeter → lock → admin avalia */}
+            {ligaConfig?.modo === "real" && (
+              jaJogouGrupoAtual ? (
+                <div style={{ color: "#1BF5A3", fontSize: 13, textAlign: "center", maxWidth: 420, background: "#1BF5A314", border: "1px solid #1BF5A344", borderRadius: 12, padding: "12px 16px" }}>
+                  ✓ {grupoAtual ? `Grupo ${grupoAtual}` : "Eliminatórias"} já avaliado. Vê os teus pontos em "As tuas jornadas" no fim da página.
+                </div>
+              ) : compSubmitDaFaseAtual && compExpirado ? (
+                <div style={{ color: "#9FB0C8", fontSize: 13, textAlign: "center", maxWidth: 460, background: "#0B1226", border: "1px solid #F2C14E44", borderRadius: 12, padding: "12px 16px" }}>
+                  🔒 Equipa submetida e fechada (prazo terminou). Aguarda que o admin avalie a competição.
+                </div>
+              ) : compSubmitDaFaseAtual ? (
+                <>
+                  <div style={{ color: "#1BF5A3", fontSize: 13, textAlign: "center", maxWidth: 460, background: "#1BF5A314", border: "1px solid #1BF5A344", borderRadius: 12, padding: "12px 16px" }}>
+                    ✓ Equipa submetida! Podes alterá-la até ao prazo.
+                    {prazoCompMs != null && <div style={{ fontSize: 11.5, color: "#6f87a8", marginTop: 6 }}>Prazo: {fmtPrazo(prazoCompMs)} · faltam {fmtRestante(prazoCompMs)}</div>}
+                  </div>
+                  <button onClick={alterarJornada} style={{ ...btn(false), fontSize: 13 }}>✏️ Alterar equipa</button>
+                </>
+              ) : compExpirado ? (
+                <div style={{ color: "#ff7b8a", fontSize: 13, textAlign: "center", maxWidth: 460, background: "#ff7b8a14", border: "1px solid #ff7b8a44", borderRadius: 12, padding: "12px 16px" }}>
+                  ⏰ O prazo para submeter a equipa desta fase terminou ({fmtPrazo(prazoCompMs)}).
+                </div>
+              ) : (
+                <>
+                  {prazoCompMs != null && <div style={{ fontSize: 12, color: "#F2C14E", fontFamily: FONT }}>⏳ Submete até {fmtPrazo(prazoCompMs)} · faltam {fmtRestante(prazoCompMs)}</div>}
+                  <button onClick={submeterJornada} disabled={!lineupReady || captain === null}
+                    style={{ ...btn(lineupReady && captain !== null), opacity: lineupReady && captain !== null ? 1 : 0.35, cursor: lineupReady && captain !== null ? "pointer" : "not-allowed", fontSize: 14, padding: "14px 30px" }}>
+                    {hasIneligible ? "Substitui as cartas inelegíveis"
+                      : !lineupFull ? "Escolhe 3 cartas"
+                      : captain === null ? "Escolhe um capitão (×2)"
+                      : `🔒 Submeter equipa — ${ligaConfig?.fase === "grupos" ? `Grupo ${grupoAtual || "A"}` : "Eliminatórias"}`}
+                  </button>
+                  <div style={{ fontSize: 11.5, color: "#6f87a8", textAlign: "center", maxWidth: 420 }}>A equipa fica registada e podes alterá-la até ao prazo. O admin avalia com os resultados reais.</div>
+                </>
+              )
+            )}
+
+            {isAdmin && ligaConfig?.modo === "real" && (
+              <button onClick={adminAvaliarCompeticao} disabled={adminCompAvaliando} style={{ ...btn(false), fontSize: 12, marginTop: 6, border: "1px dashed #F2C14E88", color: "#F2C14E", opacity: adminCompAvaliando ? 0.6 : 1 }}>
+                {adminCompAvaliando ? "⏳ A avaliar…" : "⚖ Avaliar competição (admin)"}
+              </button>
+            )}
+            {isAdmin && adminCompLog && (
+              <div style={{ fontSize: 11.5, color: adminCompLog.ok ? "#1BF5A3" : "#ff7b8a", marginTop: 2 }}>
+                {adminCompLog.ok ? `✓ ${adminCompLog.evaluated} avaliado(s), ${adminCompLog.skipped} ignorado(s)` : `✗ ${adminCompLog.error}`}
               </div>
             )}
             {isAdmin && adminProximaFaseAtivo && (
@@ -2405,8 +2507,9 @@ function App() {
               <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, overflow: "hidden" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid #16203a", fontFamily: FONT, fontSize: 10.5, letterSpacing: 1, color: "#6f87a8", textTransform: "uppercase" }}>
                   <span style={{ flex: 1, minWidth: 120 }}>Fase</span>
-                  <span style={{ flex: 2, minWidth: 140 }}>Cartas (★ capitão)</span>
-                  <span style={{ width: 70, textAlign: "right" }}>Pontos</span>
+                  <span style={{ flex: 2, minWidth: 140 }}>Cartas (★ capitão · OVR)</span>
+                  <span style={{ width: 64, textAlign: "right" }}>Pontos</span>
+                  <span style={{ width: 56, textAlign: "right" }}></span>
                 </div>
                 {jHist.map((e, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: "1px solid #16203a", flexWrap: "wrap" }}>
@@ -2423,7 +2526,10 @@ function App() {
                         );
                       })}
                     </span>
-                    <span style={{ width: 70, textAlign: "right", fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#1BF5A3" }}>{e.total}</span>
+                    <span style={{ width: 64, textAlign: "right", fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#1BF5A3" }}>{e.total}</span>
+                    <span style={{ width: 56, textAlign: "right" }}>
+                      {e.rows && <button onClick={() => verDetalheJornada(e)} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 0.5, padding: "5px 10px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #1BF5A366", color: "#1BF5A3" }}>👁 ver</button>}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -2497,15 +2603,25 @@ function App() {
             {prev.resolved && novaEtapaDisponivel && (
               <div style={{ marginTop: 18, background: "#1a1608", border: "1px solid #F2C14E66", borderRadius: 14, padding: "14px 18px", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
                 <div style={{ fontSize: 13.5, color: "#E7EEF8" }}>
-                  <b style={{ color: "#F2C14E" }}>🔔 Nova etapa disponível!</b> Esta previsão é da fase anterior. Começa a previsão da {ligaConfig?.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig?.etapa}`}{ligaConfig?.fase === "grupos" ? ` · Grupo ${ligaConfig?.grupo || "A"}` : ligaConfig?.fase === "eliminatorias" ? " · Eliminatórias" : ""}.
+                  <b style={{ color: "#F2C14E" }}>🔔 Nova etapa disponível!</b> Esta previsão é da fase anterior. Começa a previsão da {ligaConfig?.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig?.etapa}`}{ligaConfig?.fase === "grupos" ? " · Fase de Grupos" : ligaConfig?.fase === "eliminatorias" ? " · Eliminatórias" : ""}.
                 </div>
                 <button onClick={novaPrevisao} style={{ ...btn(true), fontSize: 13 }}>↻ Nova previsão</button>
               </div>
             )}
 
-            {/* 1 · sorteio dos grupos (ou carregar bracket das Finals) */}
-            {/* Se já estamos em fase de eliminatórias e não há previsão feita, mostrar botão directo para bracket */}
-            {!prev.groups && !prev.groupResult ? (
+            {/* bloqueio: a fase atual já foi prevista no passado (admin escolheu fase já jogada) */}
+            {previsaoFaseJaFeita && !prev.groups && !prev.groupResult ? (
+              <section style={{ marginTop: 26, background: "#0E162E", border: "1px solid #ff7b8a44", borderRadius: 16, padding: "24px 20px", textAlign: "center" }}>
+                <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: "#ff7b8a", marginBottom: 8 }}>✓ Previsão desta fase já feita</div>
+                <div style={{ fontSize: 13, color: "#8fa3bd", maxWidth: 480, margin: "0 auto" }}>
+                  Já fizeste a previsão da {ligaConfig?.etapa === "finals" ? "Finals" : `Etapa ${ligaConfig?.etapa}`} · {ligaConfig?.fase === "grupos" ? "Fase de Grupos" : "Eliminatórias"}. Não podes repeti-la — vê os teus pontos em "As tuas previsões" no fim da página. Aguarda que o admin avance para a fase seguinte.
+                </div>
+              </section>
+            ) :
+
+            /* 1 · sorteio dos grupos (ou carregar bracket das Finals) */
+            /* Se já estamos em fase de eliminatórias e não há previsão feita, mostrar botão directo para bracket */
+            !prev.groups && !prev.groupResult ? (
               <section style={{ marginTop: 26, background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "30px 20px", textAlign: "center" }}>
                 {ligaConfig?.etapa === "finals" ? (
                   <>
@@ -3188,7 +3304,7 @@ function App() {
       {compResult && (
         <div style={{ position: "fixed", inset: 0, zIndex: 56, background: "rgba(3,6,12,0.93)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setCompResult(null)}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: 620, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", background: "#0E162E", border: "1px solid #1BF5A344", borderRadius: 18, padding: 24, animation: "pop 320ms ease-out" }}>
-            <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff", textAlign: "center" }}>Resultado da jornada {compResult.j}</div>
+            <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff", textAlign: "center" }}>{compResult.label || `Resultado da jornada ${compResult.j}`}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, margin: "20px 0" }}>
               {compResult.rows.map((r, i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, background: "#0A1126", borderRadius: 12, padding: "12px 14px" }}>
@@ -3457,6 +3573,61 @@ function App() {
                 {"  ·  "}
                 {cfg.prazoElim ? `Eliminatórias fecham: ${new Date(cfg.prazoElim).toLocaleString("pt-PT")}` : "Eliminatórias: sem prazo definido."}
               </div>
+            </div>
+
+            {/* PRAZOS DA COMPETIÇÃO */}
+            <div style={card16}>
+              {label("PRAZOS DA COMPETIÇÃO (ESCOLHA DE CARTAS)")}
+              <p style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 14, lineHeight: 1.6 }}>
+                Até quando os jogadores podem <b style={{ color: "#fff" }}>submeter ou alterar a equipa</b> de cada fase. Depois do prazo, fica trancado. As eliminatórias fecham mais cedo. Em branco = sem prazo.
+              </p>
+              <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 11, color: "#1BF5A3", marginBottom: 4, fontFamily: FONT }}>PRAZO · FASE DE GRUPOS</div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input type="datetime-local" value={toLocalInput(cfg.prazoCompGrupos)} disabled={adminConfigSaving}
+                      onChange={(e) => adminSaveConfig({ prazoCompGrupos: e.target.value ? new Date(e.target.value).toISOString() : null })} style={dtInput} />
+                    {cfg.prazoCompGrupos && <button onClick={() => adminSaveConfig({ prazoCompGrupos: null })} title="Remover prazo" style={{ fontFamily: FONT, fontSize: 11, padding: "8px 10px", borderRadius: 8, cursor: "pointer", background: "transparent", border: "1px solid #ff7b8a55", color: "#ff7b8a" }}>✕</button>}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#F2C14E", marginBottom: 4, fontFamily: FONT }}>PRAZO · ELIMINATÓRIAS</div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input type="datetime-local" value={toLocalInput(cfg.prazoCompElim)} disabled={adminConfigSaving}
+                      onChange={(e) => adminSaveConfig({ prazoCompElim: e.target.value ? new Date(e.target.value).toISOString() : null })} style={dtInput} />
+                    {cfg.prazoCompElim && <button onClick={() => adminSaveConfig({ prazoCompElim: null })} title="Remover prazo" style={{ fontFamily: FONT, fontSize: 11, padding: "8px 10px", borderRadius: 8, cursor: "pointer", background: "transparent", border: "1px solid #ff7b8a55", color: "#ff7b8a" }}>✕</button>}
+                  </div>
+                </div>
+              </div>
+              <div style={{ marginTop: 12, fontSize: 11.5, color: "#6f87a8" }}>
+                {cfg.prazoCompGrupos ? `Grupos fecham: ${new Date(cfg.prazoCompGrupos).toLocaleString("pt-PT")}` : "Grupos: sem prazo definido."}
+                {"  ·  "}
+                {cfg.prazoCompElim ? `Eliminatórias fecham: ${new Date(cfg.prazoCompElim).toLocaleString("pt-PT")}` : "Eliminatórias: sem prazo definido."}
+              </div>
+            </div>
+
+            {/* AVALIAÇÃO DA COMPETIÇÃO */}
+            <div style={card16}>
+              {label("AVALIAÇÃO DA COMPETIÇÃO")}
+              <p style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 14, lineHeight: 1.6 }}>
+                Depois de inserires os resultados reais da fase atual ({cfg.fase === "grupos" ? `Grupo ${cfg.grupo || "A"}` : "Eliminatórias"}), calcula os pontos das equipas submetidas pelos jogadores e soma ao ranking.
+              </p>
+              <button onClick={adminAvaliarCompeticao} disabled={adminCompAvaliando} style={{ ...btn(true), fontSize: 13, opacity: adminCompAvaliando ? 0.6 : 1 }}>
+                {adminCompAvaliando ? "⏳ A avaliar…" : "⚽ Avaliar competição"}
+              </button>
+              {adminCompLog && (
+                <div style={{ marginTop: 16, background: "#060A16", border: `1px solid ${adminCompLog.ok ? "#1BF5A344" : "#ff7b8a44"}`, borderRadius: 12, padding: "14px 16px", fontSize: 12 }}>
+                  {adminCompLog.ok ? (
+                    <div style={{ color: "#8fa3bd", lineHeight: 1.8 }}>
+                      <div style={{ color: "#1BF5A3", fontFamily: FONT, fontWeight: 700, marginBottom: 6 }}>⚽ Competição avaliada</div>
+                      Jogadores pontuados: <b style={{ color: "#fff" }}>{adminCompLog.evaluated}</b><br />
+                      Ignorados (sem equipa submetida nesta fase): <b style={{ color: "#fff" }}>{adminCompLog.skipped}</b>
+                    </div>
+                  ) : (
+                    <div style={{ color: "#ff7b8a" }}>✗ {adminCompLog.error}</div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* AVALIAÇÃO DE PREVISÕES */}
