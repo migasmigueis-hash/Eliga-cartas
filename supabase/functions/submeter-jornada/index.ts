@@ -1,6 +1,6 @@
 // supabase/functions/submeter-jornada/index.ts  (NOVA)
-// Competição em 2 momentos. Jogador SUBMETE a equipa (3 cartas + capitão).
-// Não calcula pontos. Pode alterar até ao prazo. body: { lineup:[id,id,id], captain:0|1|2 }
+// Jogador SUBMETE a equipa (3 cartas + capitão). Não calcula pontos. Lock por prazo.
+// body: { lineup:[id,id,id], captain:0|1|2 }
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -49,7 +49,7 @@ Deno.serve(async (req: Request) => {
   const jHist = Array.isArray(state.jHist) ? state.jHist as Record<string, unknown>[] : [];
   const jaAvaliou = config.modo === "real" && jHist.some((j) =>
     String(j.etapa) === String(config.etapa) &&
-    (config.fase === "grupos" ? j.grupo === config.grupo && j.fase === "grupos" : j.fase === "eliminatorias") && j.modo !== "simulacao_fallback");
+    (config.fase === "grupos" ? (j.grupo || "A") === (config.grupo || "A") && j.fase === "grupos" : j.fase === "eliminatorias") && j.modo !== "simulacao_fallback");
   if (jaAvaliou) return jsonResponse({ error: "Esta fase já foi avaliada — não podes submeter outra vez." }, 400);
 
   const compSubmit = { etapa: config.etapa, fase: config.fase, grupo: config.fase === "grupos" ? (config.grupo || "A") : null, lineup, captain, t: Date.now() };

@@ -1147,6 +1147,7 @@ function App() {
   const [tradePreview, setTradePreview] = useState(null);
   const [lineup, setLineup] = useState([null, null, null]);
   const [compSubmit, setCompSubmit] = useState(null); // equipa submetida da fase atual (pendente)
+  const [compEditing, setCompEditing] = useState(false); // a editar a equipa submetida (UI local, não persiste)
   const [adminCompLog, setAdminCompLog] = useState(null);
   const [adminCompAvaliando, setAdminCompAvaliando] = useState(false);
   const [captain, setCaptain] = useState(null);
@@ -1311,7 +1312,7 @@ function App() {
 
       const lin = st.lineup || {};
       const cs = st.compSubmit || null;
-      setCompSubmit(cs);
+      setCompSubmit(cs); setCompEditing(false);
       if (cs && Array.isArray(cs.lineup)) { setLineup(cs.lineup); setCaptain(cs.captain ?? null); }
       else { setLineup(lin.ids || [null, null, null]); setCaptain(lin.captain ?? null); }
 
@@ -1370,7 +1371,7 @@ function App() {
 
   const logout = async () => {
     await supabase.auth.signOut();
-    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
+    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompEditing(false); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
   const addCards = (cards) => setCollection((prev) => {
@@ -1563,13 +1564,17 @@ function App() {
     const { data, message } = await invokeFn("submeter-jornada", { lineup, captain }, "Não foi possível submeter a equipa.");
     if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
     setCompSubmit(data.compSubmit);
+    setCompEditing(false);
     setToast("✓ Equipa submetida! Podes alterá-la até ao prazo."); setTimeout(() => setToast(null), 3000);
     playFx("flip", muted);
   };
+  // reabrir o editor SEM apagar a equipa já submetida — se o prazo passar e o
+  // jogador não voltar a submeter, a equipa anterior fica registada (no servidor).
   const alterarJornada = () => {
     if (compExpirado) { setToast("O prazo já terminou — não podes alterar."); setTimeout(() => setToast(null), 2600); return; }
-    setCompSubmit(null);
-    setToast("Equipa reaberta — ajusta e volta a submeter."); setTimeout(() => setToast(null), 2600);
+    if (compSubmit && Array.isArray(compSubmit.lineup)) { setLineup(compSubmit.lineup); setCaptain(compSubmit.captain ?? null); }
+    setCompEditing(true);
+    setToast("Equipa reaberta — ajusta e volta a submeter (senão fica a anterior)."); setTimeout(() => setToast(null), 3000);
   };
   // modo SIMULAÇÃO: calcula na hora
   const jogarSimulacao = async () => {
@@ -2442,11 +2447,19 @@ function App() {
                 <div style={{ color: "#1BF5A3", fontSize: 13, textAlign: "center", maxWidth: 420, background: "#1BF5A314", border: "1px solid #1BF5A344", borderRadius: 12, padding: "12px 16px" }}>
                   ✓ {grupoAtual ? `Grupo ${grupoAtual}` : "Eliminatórias"} já avaliado. Vê os teus pontos em "As tuas jornadas" no fim da página.
                 </div>
-              ) : compSubmitDaFaseAtual && compExpirado ? (
-                <div style={{ color: "#9FB0C8", fontSize: 13, textAlign: "center", maxWidth: 460, background: "#0B1226", border: "1px solid #F2C14E44", borderRadius: 12, padding: "12px 16px" }}>
-                  🔒 Equipa submetida e fechada (prazo terminou). Aguarda que o admin avalie a competição.
-                </div>
-              ) : compSubmitDaFaseAtual ? (
+              ) : compExpirado ? (
+                // PRAZO TERMINADO tem prioridade — nunca mostra "Alterar". Se tinha
+                // submetido (mesmo a meio de uma edição), a equipa anterior mantém-se.
+                compSubmitDaFaseAtual ? (
+                  <div style={{ color: "#9FB0C8", fontSize: 13, textAlign: "center", maxWidth: 460, background: "#0B1226", border: "1px solid #F2C14E44", borderRadius: 12, padding: "12px 16px" }}>
+                    🔒 Equipa submetida e fechada (prazo terminou). Ficou registada a tua equipa submetida. Aguarda que o admin avalie a competição.
+                  </div>
+                ) : (
+                  <div style={{ color: "#ff7b8a", fontSize: 13, textAlign: "center", maxWidth: 460, background: "#ff7b8a14", border: "1px solid #ff7b8a44", borderRadius: 12, padding: "12px 16px" }}>
+                    ⏰ O prazo para submeter a equipa desta fase terminou ({fmtPrazo(prazoCompMs)}).
+                  </div>
+                )
+              ) : compSubmitDaFaseAtual && !compEditing ? (
                 <>
                   <div style={{ color: "#1BF5A3", fontSize: 13, textAlign: "center", maxWidth: 460, background: "#1BF5A314", border: "1px solid #1BF5A344", borderRadius: 12, padding: "12px 16px" }}>
                     ✓ Equipa submetida! Podes alterá-la até ao prazo.
@@ -2454,20 +2467,18 @@ function App() {
                   </div>
                   <button onClick={alterarJornada} style={{ ...btn(false), fontSize: 13 }}>✏️ Alterar equipa</button>
                 </>
-              ) : compExpirado ? (
-                <div style={{ color: "#ff7b8a", fontSize: 13, textAlign: "center", maxWidth: 460, background: "#ff7b8a14", border: "1px solid #ff7b8a44", borderRadius: 12, padding: "12px 16px" }}>
-                  ⏰ O prazo para submeter a equipa desta fase terminou ({fmtPrazo(prazoCompMs)}).
-                </div>
               ) : (
                 <>
                   {prazoCompMs != null && <div style={{ fontSize: 12, color: "#F2C14E", fontFamily: FONT }}>⏳ Submete até {fmtPrazo(prazoCompMs)} · faltam {fmtRestante(prazoCompMs)}</div>}
+                  {compEditing && compSubmitDaFaseAtual && <div style={{ fontSize: 11.5, color: "#9FB0C8", textAlign: "center", maxWidth: 420 }}>A editar a equipa submetida. Se não voltares a submeter antes do prazo, fica a anterior.</div>}
                   <button onClick={submeterJornada} disabled={!lineupReady || captain === null}
                     style={{ ...btn(lineupReady && captain !== null), opacity: lineupReady && captain !== null ? 1 : 0.35, cursor: lineupReady && captain !== null ? "pointer" : "not-allowed", fontSize: 14, padding: "14px 30px" }}>
                     {hasIneligible ? "Substitui as cartas inelegíveis"
                       : !lineupFull ? "Escolhe 3 cartas"
                       : captain === null ? "Escolhe um capitão (×2)"
-                      : `🔒 Submeter equipa — ${ligaConfig?.fase === "grupos" ? `Grupo ${grupoAtual || "A"}` : "Eliminatórias"}`}
+                      : `🔒 ${compEditing ? "Voltar a submeter" : "Submeter"} equipa — ${ligaConfig?.fase === "grupos" ? `Grupo ${grupoAtual || "A"}` : "Eliminatórias"}`}
                   </button>
+                  {compEditing && compSubmitDaFaseAtual && <button onClick={() => { setCompEditing(false); if (compSubmit && Array.isArray(compSubmit.lineup)) { setLineup(compSubmit.lineup); setCaptain(compSubmit.captain ?? null); } }} style={{ ...btn(false), fontSize: 12 }}>Cancelar edição</button>}
                   <div style={{ fontSize: 11.5, color: "#6f87a8", textAlign: "center", maxWidth: 420 }}>A equipa fica registada e podes alterá-la até ao prazo. O admin avalia com os resultados reais.</div>
                 </>
               )
@@ -2949,7 +2960,12 @@ function App() {
                   <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 18, margin: 0, color: "#fff" }}>As tuas previsões</h2>
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <span style={{ fontSize: 11.5, color: "#6f87a8" }}>Total: <b style={{ color: "#1BF5A3" }}>{prevHist.reduce((s, e) => s + (e.score || 0), 0)} pts eLiga</b></span>
-                    {isAdmin && <button onClick={() => { setPrevHist([]); setToast("Tabela de previsões limpa."); setTimeout(() => setToast(null), 1800); }} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Limpar tabela (admin)</button>}
+                    {isAdmin && <button onClick={async () => {
+                      const { data, message } = await invokeFn("admin-limpar-previsoes", {}, "Não foi possível limpar as previsões.");
+                      if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
+                      setPrevHist([]); setPrev(EMPTY_PREV);
+                      setToast(`✓ Previsões limpas para ${data?.cleared ?? 0} jogador(es).`); setTimeout(() => setToast(null), 2800);
+                    }} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Limpar tabela — TODOS (admin)</button>}
                   </div>
                 </div>
                 <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, overflow: "hidden" }}>
@@ -3638,9 +3654,20 @@ function App() {
                 <br />• <b style={{ color: "#39E6FF" }}>Fase de grupos</b> — depois de inserires o bracket real (QF) da etapa: revela os apurados e pontua-os. A bracket fica disponível para os jogadores preverem a eliminatória.
                 <br />• <b style={{ color: "#F2C14E" }}>Eliminatória</b> — depois de inserires os resultados (QF, MF e Final com golos): pontua as previsões das eliminatórias.
               </p>
-              <button onClick={adminAvaliarPrevisoes} disabled={adminAvaliando} style={{ ...btn(true), fontSize: 13, opacity: adminAvaliando ? 0.6 : 1 }}>
-                {adminAvaliando ? "⏳ A avaliar…" : "⚖ Avaliar previsões"}
-              </button>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <button onClick={adminAvaliarPrevisoes} disabled={adminAvaliando} style={{ ...btn(true), fontSize: 13, opacity: adminAvaliando ? 0.6 : 1 }}>
+                  {adminAvaliando ? "⏳ A avaliar…" : "⚖ Avaliar previsões"}
+                </button>
+                <button onClick={async () => {
+                  if (!window.confirm("Limpar as previsões (tabela + previsão a decorrer) de TODOS os jogadores? Esta ação não pode ser desfeita.")) return;
+                  const { data, message } = await invokeFn("admin-limpar-previsoes", {}, "Não foi possível limpar as previsões.");
+                  if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
+                  setPrevHist([]); setPrev(EMPTY_PREV);
+                  setToast(`✓ Previsões limpas para ${data?.cleared ?? 0} jogador(es).`); setTimeout(() => setToast(null), 3000);
+                }} style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, letterSpacing: 1, padding: "12px 22px", borderRadius: 10, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>
+                  ↻ Limpar previsões — TODOS
+                </button>
+              </div>
               {adminAvalLog && (
                 <div style={{ marginTop: 16, background: "#060A16", border: `1px solid ${adminAvalLog.ok ? "#1BF5A344" : "#ff7b8a44"}`, borderRadius: 12, padding: "14px 16px", fontSize: 12 }}>
                   {adminAvalLog.ok ? (

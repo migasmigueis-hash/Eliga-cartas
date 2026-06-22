@@ -1,6 +1,6 @@
 // supabase/functions/avaliar-competicao/index.ts  (NOVA — admin)
-// Avalia a competição da fase atual: calcula pontos de cada jogador com compSubmit,
-// grava jHist (com detalhe rows), soma ao ranking. Limpa compSubmit.
+// Avalia a competição da fase atual: calcula pontos de cada compSubmit, grava jHist
+// (com detalhe rows), soma ao ranking. Limpa compSubmit.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
