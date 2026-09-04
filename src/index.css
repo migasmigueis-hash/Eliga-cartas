@@ -106,4 +106,25 @@ input, select, textarea {
   .studio-actions { justify-content: flex-start; }
   .studio-grid.two, .studio-grid.rating-effect { grid-template-columns: 1fr; }
   .studio-form, .studio-preview { padding: 18px; }
+
+  .admin-match-row {
+    grid-template-columns: minmax(82px, 1fr) minmax(105px, 1.25fr) 64px !important;
+    grid-template-areas:
+      "round round remove"
+      "club-a player-a score-a"
+      "club-b player-b score-b";
+    overflow-x: visible !important;
+    padding: 12px 0;
+    border-bottom: 1px solid #1a2440;
+  }
+  .admin-match-row.knockout { grid-template-areas: "remove remove remove" "club-a player-a score-a" "club-b player-b score-b"; }
+  .match-round { grid-area: round; max-width: 80px; }
+  .match-club-a { grid-area: club-a; }
+  .match-player-a { grid-area: player-a; }
+  .match-score-a { grid-area: score-a; }
+  .match-club-b { grid-area: club-b; }
+  .match-player-b { grid-area: player-b; }
+  .match-score-b { grid-area: score-b; }
+  .match-remove { grid-area: remove; width: 36px; justify-self: end; }
+  .match-dash { display: none; }
 }

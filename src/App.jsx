@@ -1020,6 +1020,152 @@ function AdminCardStudio({ initialBatches, initialBaseOverrides, baseCards, buil
   );
 }
 
+const defaultCompetitionCatalog = () => TEAMS.map((team) => ({
+  id: team.id,
+  name: team.name,
+  short: team.short,
+  logo: team.logo,
+  players: PLAYERS.filter((player) => player.team === team.id).map((player) => ({ id: player.id, name: player.name })),
+}));
+
+const competitionId = (value, fallback) => {
+  const id = String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return id || fallback;
+};
+const competitionPlayerId = (value, fallback) => competitionId(value, fallback).replace(/^pl-/, "") || fallback;
+
+function AdminCompetitionData({ onRequest }) {
+  const [mode, setMode] = useState("results");
+  const [catalog, setCatalog] = useState(defaultCompetitionCatalog);
+  const [clubIndex, setClubIndex] = useState(0);
+  const [etapa, setEtapa] = useState("1");
+  const [phase, setPhase] = useState("groups");
+  const [group, setGroup] = useState("A");
+  const [matches, setMatches] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState(null);
+  const loadRequestRef = useRef(0);
+  const control = { background: "#060A16", color: "#fff", border: "1px solid #263958", borderRadius: 8, padding: "9px 10px", fontFamily: FONT, outline: "none", minWidth: 0 };
+  const labelStyle = { display: "block", fontFamily: FONT, fontSize: 10, letterSpacing: 1.1, color: "#7f93ae", marginBottom: 5 };
+
+  const firstPlayer = (teamId) => {
+    const player = catalog.find((club) => club.id === teamId)?.players?.[0];
+    return player ? `pl-${player.id}` : "";
+  };
+  const blankMatch = () => {
+    const teamA = catalog[0]?.id || "";
+    const teamB = catalog.find((club) => club.id !== teamA)?.id || "";
+    return { round: 1, teamA, playerA: firstPlayer(teamA), golosA: 0, teamB, playerB: firstPlayer(teamB), golosB: 0 };
+  };
+  const loadCatalog = async () => {
+    const { data, message } = await onRequest({ action: "load" });
+    if (!message && data?.catalog?.length) setCatalog(data.catalog);
+  };
+  const loadResults = async (nextEtapa = etapa, nextPhase = phase, nextGroup = group) => {
+    const requestId = ++loadRequestRef.current;
+    setBusy(true); setStatus(null); setMatches([]);
+    const { data, message } = await onRequest({ action: "loadResults", etapa: nextEtapa, phase: nextPhase, group: nextGroup });
+    if (requestId !== loadRequestRef.current) return;
+    setBusy(false);
+    if (message) { setStatus({ ok: false, text: message }); return; }
+    setMatches(data?.matches?.length ? data.matches : []);
+  };
+  useEffect(() => { loadCatalog(); }, []);
+  useEffect(() => { if (mode === "results") loadResults(); }, [mode, etapa, phase, group]);
+
+  const updateClub = (patch) => setCatalog((all) => all.map((club, index) => index === clubIndex ? { ...club, ...patch } : club));
+  const addClub = () => {
+    const id = `clube-${Date.now()}`;
+    setCatalog((all) => [...all, { id, name: "Novo clube", short: "NOVO", logo: "", players: [{ id: `jogador-${Date.now()}`, name: "Novo jogador" }] }]);
+    setClubIndex(catalog.length);
+  };
+  const removeClub = () => {
+    if (catalog.length <= 2) return;
+    setCatalog((all) => all.filter((_, index) => index !== clubIndex));
+    setClubIndex(Math.max(0, clubIndex - 1));
+  };
+  const updatePlayer = (index, patch) => updateClub({ players: catalog[clubIndex].players.map((player, playerIndex) => playerIndex === index ? { ...player, ...patch } : player) });
+  const addPlayer = () => updateClub({ players: [...catalog[clubIndex].players, { id: `jogador-${Date.now()}`, name: "Novo jogador" }] });
+  const removePlayer = (index) => {
+    if (catalog[clubIndex].players.length <= 1) return;
+    updateClub({ players: catalog[clubIndex].players.filter((_, playerIndex) => playerIndex !== index) });
+  };
+  const saveCatalog = async () => {
+    setBusy(true); setStatus(null);
+    const cleanCatalog = catalog.map((club, index) => ({ ...club, id: competitionId(club.id, `clube-${index + 1}`), players: club.players.map((player, playerIndex) => ({ ...player, id: competitionPlayerId(player.id, `jogador-${index + 1}-${playerIndex + 1}`) })) }));
+    const { data, message } = await onRequest({ action: "saveCatalog", catalog: cleanCatalog });
+    setBusy(false);
+    if (message) { setStatus({ ok: false, text: message }); return; }
+    setCatalog(data.catalog); setStatus({ ok: true, text: `${data.catalog.length} clubes guardados.` });
+  };
+  const updateMatch = (index, patch) => setMatches((all) => all.map((match, matchIndex) => matchIndex === index ? { ...match, ...patch } : match));
+  const changeMatchTeam = (index, side, teamId) => updateMatch(index, { [`team${side}`]: teamId, [`player${side}`]: firstPlayer(teamId) });
+  const saveResults = async () => {
+    if (!matches.length) { setStatus({ ok: false, text: "Adiciona pelo menos um jogo." }); return; }
+    setBusy(true); setStatus(null);
+    const payload = { action: "saveResults", etapa, phase, group, matches: matches.map((match) => ({ ...match, round: Number(match.round), golosA: Number(match.golosA), golosB: Number(match.golosB) })) };
+    const { data, message } = await onRequest(payload);
+    setBusy(false);
+    if (message) { setStatus({ ok: false, text: message }); return; }
+    setStatus({ ok: true, text: `${data.matches} jogo(s) guardado(s): ${data.keys.join(", ")}` });
+  };
+  const selectEtapa = (value) => {
+    setEtapa(value);
+    setPhase(value === "finals" ? "finals" : "groups");
+  };
+
+  const club = catalog[clubIndex];
+  return (
+    <section style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 16, padding: "20px 22px", marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+        <div><div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1.5, color: "#6f87a8" }}>DADOS MANUAIS</div><div style={{ color: "#fff", fontFamily: FONT, fontWeight: 700, marginTop: 4 }}>Clubes, jogadores e resultados</div></div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => setMode("catalog")} style={{ ...control, cursor: "pointer", color: mode === "catalog" ? "#04140c" : "#9FB0C8", background: mode === "catalog" ? "#1BF5A3" : "#060A16" }}>Clubes e jogadores</button>
+          <button onClick={() => setMode("results")} style={{ ...control, cursor: "pointer", color: mode === "results" ? "#04140c" : "#9FB0C8", background: mode === "results" ? "#1BF5A3" : "#060A16" }}>Resultados</button>
+        </div>
+      </div>
+
+      {mode === "catalog" && club && <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 240px) minmax(0, 1fr)", gap: 18 }}>
+        <div>
+          <select value={club.id} onChange={(event) => setClubIndex(catalog.findIndex((item) => item.id === event.target.value))} style={{ ...control, width: "100%" }}>{catalog.map((item) => <option key={item.id} value={item.id}>{item.short} · {item.name}</option>)}</select>
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}><button onClick={addClub} style={{ ...control, cursor: "pointer", flex: 1 }}>+ Clube</button><button onClick={removeClub} disabled={catalog.length <= 2} style={{ ...control, cursor: "pointer", color: "#ff7b8a" }}>Eliminar</button></div>
+          <div style={{ minHeight: 100, marginTop: 14, display: "grid", placeItems: "center", border: "1px solid #1a2440", borderRadius: 10, background: "#060A16" }}>{club.logo ? <img src={club.logo.startsWith("http") ? club.logo : LOGO_BASE + club.logo} alt="" style={{ width: 76, height: 76, objectFit: "contain" }} /> : <span style={{ color: "#6f87a8" }}>Sem logo</span>}</div>
+        </div>
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 110px", gap: 10 }}><label><span style={labelStyle}>NOME</span><input value={club.name} onChange={(event) => updateClub({ name: event.target.value })} style={{ ...control, width: "100%", boxSizing: "border-box" }} /></label><label><span style={labelStyle}>SIGLA</span><input maxLength={12} value={club.short} onChange={(event) => updateClub({ short: event.target.value.toUpperCase() })} style={{ ...control, width: "100%", boxSizing: "border-box" }} /></label></div>
+          <label style={{ display: "block", marginTop: 10 }}><span style={labelStyle}>LOGO · URL OU FICHEIRO OFICIAL</span><input value={club.logo} onChange={(event) => updateClub({ logo: event.target.value })} placeholder="https://... ou logo.png" style={{ ...control, width: "100%", boxSizing: "border-box" }} /></label>
+          <div style={{ ...labelStyle, marginTop: 16 }}>JOGADORES</div>
+          {club.players.map((player, index) => <div key={`${player.id}-${index}`} style={{ display: "grid", gridTemplateColumns: "minmax(100px, 1fr) minmax(100px, 1fr) 36px", gap: 6, marginBottom: 6 }}><input value={player.name} onChange={(event) => updatePlayer(index, { name: event.target.value })} placeholder="Nome" style={control} /><input value={player.id} onChange={(event) => updatePlayer(index, { id: event.target.value })} onBlur={(event) => updatePlayer(index, { id: competitionPlayerId(event.target.value, `jogador-${index + 1}`) })} placeholder="id-jogador" style={control} /><button onClick={() => removePlayer(index)} title="Remover jogador" style={{ ...control, cursor: "pointer", color: "#ff7b8a" }}>×</button></div>)}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}><button onClick={addPlayer} style={{ ...control, cursor: "pointer" }}>+ Jogador</button><button onClick={saveCatalog} disabled={busy} style={{ ...control, cursor: "pointer", background: "#1BF5A3", color: "#04140c", fontWeight: 700 }}>{busy ? "A guardar..." : "Guardar catálogo"}</button></div>
+        </div>
+      </div>}
+
+      {mode === "results" && <div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
+          <label><span style={labelStyle}>COMPETIÇÃO</span><select value={etapa} onChange={(event) => selectEtapa(event.target.value)} style={control}><option value="1">Etapa 1</option><option value="2">Etapa 2</option><option value="3">Etapa 3</option><option value="finals">Finals</option></select></label>
+          <label><span style={labelStyle}>FASE</span><select value={phase} disabled={etapa === "finals"} onChange={(event) => setPhase(event.target.value)} style={control}>{etapa === "finals" ? <option value="finals">Finals</option> : <><option value="groups">Fase de grupos</option><option value="qf">Quartos de final</option><option value="sf">Meias-finais</option><option value="final">Final</option></>}</select></label>
+          {phase === "groups" && <label><span style={labelStyle}>GRUPO</span><select value={group} onChange={(event) => setGroup(event.target.value)} style={control}><option>A</option><option>B</option><option>C</option></select></label>}
+          <button onClick={() => setMatches((all) => [...all, blankMatch()])} style={{ ...control, cursor: "pointer" }}>+ Adicionar jogo</button>
+        </div>
+        {!matches.length && <div style={{ border: "1px dashed #263958", borderRadius: 10, padding: 24, textAlign: "center", color: "#6f87a8", fontSize: 13 }}>Ainda não há resultados nesta fase.</div>}
+        {matches.map((match, index) => <div key={index} className={`admin-match-row ${phase === "groups" ? "groups" : "knockout"}`} style={{ display: "grid", gridTemplateColumns: phase === "groups" ? "70px minmax(135px,1fr) minmax(120px,1fr) 64px 24px 64px minmax(120px,1fr) minmax(135px,1fr) 36px" : "minmax(135px,1fr) minmax(120px,1fr) 64px 24px 64px minmax(120px,1fr) minmax(135px,1fr) 36px", gap: 6, alignItems: "end", marginBottom: 8, overflowX: "auto" }}>
+          {phase === "groups" && <label className="match-round"><span style={labelStyle}>RONDA</span><select value={match.round || 1} onChange={(event) => updateMatch(index, { round: Number(event.target.value) })} style={{ ...control, width: "100%" }}>{[1,2,3,4,5].map((round) => <option key={round}>{round}</option>)}</select></label>}
+          <label className="match-club-a"><span style={labelStyle}>CLUBE A</span><select value={match.teamA} onChange={(event) => changeMatchTeam(index, "A", event.target.value)} style={{ ...control, width: "100%" }}>{catalog.map((item) => <option key={item.id} value={item.id}>{item.short}</option>)}</select></label>
+          <label className="match-player-a"><span style={labelStyle}>JOGADOR A</span><select value={match.playerA} onChange={(event) => updateMatch(index, { playerA: event.target.value })} style={{ ...control, width: "100%" }}>{(catalog.find((item) => item.id === match.teamA)?.players || []).map((player) => <option key={player.id} value={`pl-${player.id}`}>{player.name}</option>)}</select></label>
+          <label className="match-score-a"><span style={labelStyle}>GOLOS</span><input type="number" min="0" max="99" value={match.golosA} onChange={(event) => updateMatch(index, { golosA: event.target.value })} style={{ ...control, width: "100%", boxSizing: "border-box" }} /></label>
+          <div className="match-dash" style={{ color: "#6f87a8", textAlign: "center", paddingBottom: 10 }}>–</div>
+          <label className="match-score-b"><span style={labelStyle}>GOLOS</span><input type="number" min="0" max="99" value={match.golosB} onChange={(event) => updateMatch(index, { golosB: event.target.value })} style={{ ...control, width: "100%", boxSizing: "border-box" }} /></label>
+          <label className="match-player-b"><span style={labelStyle}>JOGADOR B</span><select value={match.playerB} onChange={(event) => updateMatch(index, { playerB: event.target.value })} style={{ ...control, width: "100%" }}>{(catalog.find((item) => item.id === match.teamB)?.players || []).map((player) => <option key={player.id} value={`pl-${player.id}`}>{player.name}</option>)}</select></label>
+          <label className="match-club-b"><span style={labelStyle}>CLUBE B</span><select value={match.teamB} onChange={(event) => changeMatchTeam(index, "B", event.target.value)} style={{ ...control, width: "100%" }}>{catalog.map((item) => <option key={item.id} value={item.id}>{item.short}</option>)}</select></label>
+          <button className="match-remove" onClick={() => setMatches((all) => all.filter((_, matchIndex) => matchIndex !== index))} title="Remover jogo" style={{ ...control, cursor: "pointer", color: "#ff7b8a" }}>×</button>
+        </div>)}
+        <button onClick={saveResults} disabled={busy || !matches.length} style={{ ...control, cursor: "pointer", background: "#1BF5A3", color: "#04140c", fontWeight: 700, marginTop: 10 }}>{busy ? "A guardar..." : "Submeter resultados"}</button>
+      </div>}
+      {status && <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, border: `1px solid ${status.ok ? "#1BF5A344" : "#ff7b8a44"}`, color: status.ok ? "#1BF5A3" : "#ff7b8a", fontSize: 12 }}>{status.text}</div>}
+    </section>
+  );
+}
+
 /* ---------- abertura: packs e trocas (mesmo fluxo de reveal) ---------- */
 function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = false, onShare, onSharePack, onDone, onAgain, againLabel = "Abrir outro" }) {
   // uma carta é "NOVA" se não a tinhas antes deste pack E é a primeira aparição dela dentro do pack
@@ -3875,7 +4021,7 @@ function App() {
           </select>
         );
         return (
-          <main style={{ maxWidth: adminSection === "studio" ? 1380 : 700, margin: "0 auto", padding: "36px 20px 80px" }}>
+          <main style={{ maxWidth: 1380, margin: "0 auto", padding: "36px 20px 80px" }}>
             <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: "0 0 6px" }}>⚙ Painel Admin</h1>
             <p style={{ color: "#6f87a8", fontSize: 13, marginBottom: 28 }}>Configuração da competição e sincronização de dados.</p>
 
@@ -3968,6 +4114,8 @@ function App() {
                 )}
               </div>
             </div>
+
+            <AdminCompetitionData onRequest={(body) => invokeFn("admin-competition-data", body, "Não foi possível guardar os dados da competição.")} />
 
             {/* PRAZOS DAS PREVISÕES */}
             <div style={card16}>
@@ -4111,7 +4259,7 @@ function App() {
             <div style={card16}>
               {label("SINCRONIZAR DADOS DO SITE")}
               <p style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 14, lineHeight: 1.6 }}>
-                Faz scraping de <span style={{ color: "#39E6FF" }}>esports.ligaportugal.pt</span>, extrai grupos, rondas e eliminatórias e guarda em <code style={{ color: "#F2C14E" }}>liga_data</code>. Podes sempre corrigir dados manualmente no Supabase Dashboard.
+                Faz scraping de <span style={{ color: "#39E6FF" }}>esports.ligaportugal.pt</span>, extrai grupos, rondas e eliminatórias e guarda em <code style={{ color: "#F2C14E" }}>liga_data</code>. Podes corrigir os dados no editor manual acima.
               </p>
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 11, color: "#6f87a8", marginBottom: 6, letterSpacing: 1 }}>ALTERNATIVA — COLAR CONTEÚDO DA PÁGINA</div>
