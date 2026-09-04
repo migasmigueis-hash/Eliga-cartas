@@ -12,6 +12,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
 import { validateObjectiveClaim } from "../_shared/objectives.ts";
 
+const ESCOLHAS_CAP = 10;
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
   if (req.method !== "POST") return jsonResponse({ error: "Método não permitido." }, 405);
@@ -54,13 +56,17 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "Este objetivo dá um pack, não Escolhas — abre-o na Loja/Objetivos." }, 400);
   }
   const amount = parseInt(result.reward.slice("escolha".length), 10);
+  const currentEscolhas = (state.escolhas as number) || 0;
+  if (currentEscolhas + amount > ESCOLHAS_CAP) {
+    return jsonResponse({ error: `Só podes acumular ${ESCOLHAS_CAP} Escolhas. Usa algumas antes de reclamar este objetivo.` }, 400);
+  }
 
   const id = body.id as string;
   const periodo = body.periodo as string;
   const claims = { ...((prevMeta.claims as Record<string, string>) ?? {}) };
   claims[id] = periodo;
   const meta = { ...prevMeta, claims };
-  const escolhas = ((state.escolhas as number) || 0) + amount;
+  const escolhas = currentEscolhas + amount;
 
   const newState = { ...state, meta, escolhas };
 

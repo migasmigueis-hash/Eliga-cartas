@@ -10,6 +10,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
 import { PACKS, REDEEM_CODES, applyPackOpening } from "../_shared/gameData.ts";
 
+const ESCOLHAS_CAP = 10;
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
   if (req.method !== "POST") return jsonResponse({ error: "Método não permitido." }, 405);
@@ -51,16 +53,20 @@ Deno.serve(async (req: Request) => {
   const state = (profile.state ?? {}) as Record<string, unknown>;
   const codesUsed: string[] = Array.isArray(state.codesUsed) ? [...(state.codesUsed as string[])] : [];
   if (codesUsed.includes(code)) return jsonResponse({ error: "Esse código já foi usado nesta conta." }, 400);
-  codesUsed.push(code);
-
   let newState: Record<string, unknown>;
   let responseBody: Record<string, unknown>;
 
   if (entry.escolhas) {
-    const escolhas = ((state.escolhas as number) || 0) + entry.escolhas;
+    const currentEscolhas = (state.escolhas as number) || 0;
+    if (currentEscolhas + entry.escolhas > ESCOLHAS_CAP) {
+      return jsonResponse({ error: `Só podes acumular ${ESCOLHAS_CAP} Escolhas. Usa algumas antes de resgatar este código.` }, 400);
+    }
+    codesUsed.push(code);
+    const escolhas = currentEscolhas + entry.escolhas;
     newState = { ...state, codesUsed, escolhas };
     responseBody = { type: "escolhas", amount: entry.escolhas, escolhas, codesUsed };
   } else {
+    codesUsed.push(code);
     const pack = PACKS.find((p) => p.id === entry.pack);
     if (!pack) return jsonResponse({ error: "Recompensa inválida (pack desconhecido)." }, 500);
     const { collection, meta, hist, cardIds } = applyPackOpening(state, pack);

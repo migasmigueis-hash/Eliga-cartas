@@ -22,7 +22,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
-import { PACKS, applyPackOpening, todayStr } from "../_shared/gameData.ts";
+import { PACKS, applyPackOpening, todayStr, type CardRef, type PackDef } from "../_shared/gameData.ts";
 import { validateObjectiveClaim } from "../_shared/objectives.ts";
 
 Deno.serve(async (req: Request) => {
@@ -42,10 +42,6 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "Pedido inválido (JSON em falta)." }, 400);
   }
 
-  const pack = PACKS.find((p) => p.id === body.packId);
-  if (!pack) return jsonResponse({ error: "Pack desconhecido." }, 400);
-  if (pack.locked) return jsonResponse({ error: "Este pack ainda não está disponível." }, 400);
-
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
   const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
   const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -62,6 +58,29 @@ Deno.serve(async (req: Request) => {
 
   // cliente com privilégios de serviço — lê/escreve o progresso, ignorando RLS
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+
+  let pack = PACKS.find((item) => item.id === body.packId);
+  let customPool: CardRef[] | undefined;
+  if (body.packId === "etapa1") {
+    const { data: configRow } = await admin.from("liga_data").select("data").eq("key", "config").single();
+    const config = (configRow?.data ?? {}) as Record<string, unknown>;
+    const batches = Array.isArray(config.customBatches) ? config.customBatches as Array<Record<string, unknown>> : [];
+    const published = batches.find((batch) => batch.status === "published");
+    const cards = published && Array.isArray(published.cards) ? published.cards as Array<Record<string, unknown>> : [];
+    if (published && cards.length) {
+      pack = { id: "etapa1", name: published.name as string, locked: false, specialBoost: 0, twitchCost: 150 } as PackDef;
+      customPool = cards.map((card) => ({
+        id: card.id as string,
+        rarity: card.rarity as CardRef["rarity"],
+        team: typeof card.team === "string" ? card.team : null,
+        isClub: card.isClub === true,
+        isCaster: card.isCaster === true,
+        edition: typeof card.edition === "string" ? card.edition : null,
+      }));
+    }
+  }
+  if (!pack) return jsonResponse({ error: "Pack desconhecido." }, 400);
+  if (pack.locked || !customPool && pack.id === "etapa1") return jsonResponse({ error: "Este pack ainda não está disponível." }, 400);
 
   const { data: profile, error: profErr } = await admin
     .from("profiles")
@@ -131,7 +150,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "As aberturas grátis estão temporariamente desativadas. Liga a tua conta Twitch para trocar pontos por packs." }, 403);
   }
 
-  const { collection, meta, hist, cardIds } = applyPackOpening(state, pack);
+  const { collection, meta, hist, cardIds } = applyPackOpening(state, pack, customPool);
 
   // marca o objetivo como reclamado (já validado acima), na mesma escrita
   // — evita a corrida entre o "claim" local e este pedido

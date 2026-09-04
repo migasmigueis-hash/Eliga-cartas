@@ -87,7 +87,12 @@ export function randomOfRarity(rarity: Rarity, preferSpecial: boolean): CardRef 
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-export function drawPack(pack: PackDef): CardRef[] {
+export function drawPack(pack: PackDef, cardPool: CardRef[] = CARD_POOL): CardRef[] {
+  if (cardPool !== CARD_POOL) {
+    return [0, 1, 2]
+      .map(() => cardPool[Math.floor(Math.random() * cardPool.length)])
+      .sort((a, b) => RARITY_ORDER[a.rarity] - RARITY_ORDER[b.rarity]);
+  }
   const cards = [0, 1, 2].map(() => randomOfRarity(rollRarity(pack.specialBoost), !!pack.specialBoost));
   return cards.sort((a, b) => RARITY_ORDER[a.rarity] - RARITY_ORDER[b.rarity]);
 }
@@ -170,7 +175,7 @@ export interface PackOpeningResult {
 // lógica completa de "abrir pack" (sorteio + garantia/pity + atualização de
 // coleção/meta/histórico), partilhada entre as Edge Functions open-pack e
 // redeem-code. Não escreve na base de dados — só calcula o novo estado.
-export function applyPackOpening(state: Record<string, unknown>, pack: PackDef): PackOpeningResult {
+export function applyPackOpening(state: Record<string, unknown>, pack: PackDef, cardPool: CardRef[] = CARD_POOL): PackOpeningResult {
   const collection: Record<string, number> = { ...((state.collection as Record<string, number>) ?? {}) };
   const prevMeta = (state.meta as Record<string, unknown>) ?? {};
   const meta: Record<string, unknown> = {
@@ -179,9 +184,9 @@ export function applyPackOpening(state: Record<string, unknown>, pack: PackDef):
   };
   const hist: unknown[] = Array.isArray(state.hist) ? [...(state.hist as unknown[])] : [];
 
-  let cards: CardRef[] = drawPack(pack);
+  let cards: CardRef[] = drawPack(pack, cardPool);
   const pity = (meta.pity as number) || 0;
-  if (!hasEpicPlus(cards) && pity + 1 >= 10) {
+  if (cardPool === CARD_POOL && !hasEpicPlus(cards) && pity + 1 >= 10) {
     const rar = Math.random() < 0.12 ? "lendaria" : "epica";
     cards[2] = randomOfRarity(rar, !!pack.specialBoost);
     cards = [...cards].sort((a, b) => RARITY_ORDER[a.rarity] - RARITY_ORDER[b.rarity]);
