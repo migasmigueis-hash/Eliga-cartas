@@ -5,7 +5,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
-import { JORNADA_CARDS, scoreLineup, type ScoreRow, effectOf } from "../_shared/jornadaScore.ts";
+import { JORNADA_CARDS, scoreLineup, type JornadaCard, type ScoreRow, effectOf } from "../_shared/jornadaScore.ts";
 
 const SCORE_REAL = { vit: 20, emp: 8, der: 3, golo: 2 };
 
@@ -14,8 +14,8 @@ interface RealMatch {
   teamB: string; playerB: string; golosB: number;
 }
 
-function scoreRealCard(cardId: string, allMatches: RealMatch[]): ScoreRow {
-  const card = JORNADA_CARDS.find((c) => c.id === cardId)!;
+function scoreRealCard(cardId: string, allMatches: RealMatch[], cardPool: JornadaCard[]): ScoreRow {
+  const card = cardPool.find((c) => c.id === cardId)!;
   if (card.isCaster) {
     return { cardId, captain: false, synergy: 0, perf: { vit: 0, emp: 0, der: 0, golos: 0, jogos: 0, games: [] }, base: 0, bonus: 0, fx: effectOf(card), subtotal: 0 };
   }
@@ -58,9 +58,6 @@ Deno.serve(async (req: Request) => {
   if (typeof captain !== "number" || ![0, 1, 2].includes(captain))
     return jsonResponse({ error: "Capitão inválido." }, 400);
 
-  const cards = (lineup as string[]).map((id) => JORNADA_CARDS.find((c) => c.id === id));
-  if (cards.some((c) => !c)) return jsonResponse({ error: "Carta desconhecida na equipa." }, 400);
-
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
   const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
   const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -85,8 +82,46 @@ Deno.serve(async (req: Request) => {
   }
 
   const config = (configRes.data?.data ?? { modo: "simulacao", etapa: 1, fase: "grupos", grupo: "A" }) as {
-    modo: string; etapa: number | string; fase: string; grupo?: string;
+    modo: string;
+    etapa: number | string;
+    fase: string;
+    grupo?: string;
+    baseCardOverrides?: Record<string, Partial<JornadaCard>>;
+    customBatches?: Array<{ status?: string; cards?: Array<Partial<JornadaCard> & { id: string; name: string }> }>;
   };
+  const competitionCards = JORNADA_CARDS.map((card) => ({
+    ...card,
+    ...(config.baseCardOverrides?.[card.id] || {}),
+    id: card.id,
+    edition: card.edition,
+  }));
+  const knownIds = new Set(competitionCards.map((card) => card.id));
+  for (const batch of config.customBatches || []) {
+    if (batch.status !== "published") continue;
+    for (const card of batch.cards || []) {
+      if (knownIds.has(card.id)) continue;
+      const baseIdentity = !card.isClub && !card.isCaster
+        ? JORNADA_CARDS.find((candidate) => !candidate.edition && !candidate.isClub && !candidate.isCaster && candidate.name.toLocaleLowerCase("pt-PT") === card.name.toLocaleLowerCase("pt-PT"))
+        : undefined;
+      competitionCards.push({
+        id: card.id,
+        name: card.name,
+        rarity: card.rarity || "comum",
+        team: card.team || null,
+        isClub: card.isClub === true,
+        isCaster: card.isCaster === true,
+        edition: card.edition || null,
+        ref: card.ref || baseIdentity?.ref || null,
+        casterRef: card.casterRef || null,
+        v: card.v ?? baseIdentity?.v ?? null,
+        mg: card.mg ?? baseIdentity?.mg ?? null,
+        customEffect: card.customEffect,
+      });
+      knownIds.add(card.id);
+    }
+  }
+  const cards = (lineup as string[]).map((id) => competitionCards.find((card) => card.id === id));
+  if (cards.some((card) => !card)) return jsonResponse({ error: "Carta desconhecida na equipa." }, 400);
 
   if (config.modo === "real" && config.fase === "grupos") {
     const jHist = Array.isArray(state.jHist) ? state.jHist as Record<string, unknown>[] : [];
@@ -117,7 +152,7 @@ Deno.serve(async (req: Request) => {
       for (const r of rondasRes) { if (r.data?.data) allMatches = allMatches.concat(r.data.data as RealMatch[]); }
       if (allMatches.length === 0) return jsonResponse({ error: `Dados do Grupo ${config.grupo} ainda não disponíveis. Contacta o admin para sincronizar.` }, 400);
 
-      rows = (lineup as string[]).map((id, i) => { const r = scoreRealCard(id, allMatches); r.captain = i === captain; return r; });
+      rows = (lineup as string[]).map((id, i) => { const r = scoreRealCard(id, allMatches, competitionCards); r.captain = i === captain; return r; });
       for (const r of rows) {
         const fx = r.fx;
         if (fx.tipo === "artilheiro") r.bonus = r.perf.golos * fx.mag;
@@ -131,8 +166,8 @@ Deno.serve(async (req: Request) => {
       }
       for (const r of rows) {
         const fx = r.fx;
-        const card = JORNADA_CARDS.find((c) => c.id === r.cardId)!;
-        if (fx.tipo === "clube") rows.forEach((o) => { if (o !== r && JORNADA_CARDS.find((c) => c.id === o.cardId)?.team === card.team) o.synergy += Math.round(((o.base + o.bonus) * fx.mag) / 100); });
+        const card = competitionCards.find((c) => c.id === r.cardId)!;
+        if (fx.tipo === "clube") rows.forEach((o) => { if (o !== r && competitionCards.find((c) => c.id === o.cardId)?.team === card.team) o.synergy += Math.round(((o.base + o.bonus) * fx.mag) / 100); });
         if (fx.tipo === "mentor") rows.forEach((o) => { if (o !== r) o.synergy += fx.mag; });
         if (fx.tipo === "fortaleza") { const ders = rows.reduce((s, o) => s + o.perf.der, 0); r.synergy += ders * fx.mag; }
         if (fx.tipo === "hype") { const cap = rows.find((o) => o.captain); if (cap && cap !== r) cap.synergy += Math.round(((cap.base + cap.bonus) * fx.mag) / 100); }
@@ -159,7 +194,7 @@ Deno.serve(async (req: Request) => {
       }
       if (allMatches.length === 0) return jsonResponse({ error: "Dados das eliminatórias ainda não disponíveis. Contacta o admin para sincronizar." }, 400);
 
-      rows = (lineup as string[]).map((id, i) => { const r = scoreRealCard(id, allMatches); r.captain = i === captain; return r; });
+      rows = (lineup as string[]).map((id, i) => { const r = scoreRealCard(id, allMatches, competitionCards); r.captain = i === captain; return r; });
       for (const r of rows) {
         const fx = r.fx;
         if (fx.tipo === "artilheiro") r.bonus = r.perf.golos * fx.mag;
@@ -172,8 +207,8 @@ Deno.serve(async (req: Request) => {
       }
       for (const r of rows) {
         const fx = r.fx;
-        const card = JORNADA_CARDS.find((c) => c.id === r.cardId)!;
-        if (fx.tipo === "clube") rows.forEach((o) => { if (o !== r && JORNADA_CARDS.find((c) => c.id === o.cardId)?.team === card.team) o.synergy += Math.round(((o.base + o.bonus) * fx.mag) / 100); });
+        const card = competitionCards.find((c) => c.id === r.cardId)!;
+        if (fx.tipo === "clube") rows.forEach((o) => { if (o !== r && competitionCards.find((c) => c.id === o.cardId)?.team === card.team) o.synergy += Math.round(((o.base + o.bonus) * fx.mag) / 100); });
         if (fx.tipo === "mentor") rows.forEach((o) => { if (o !== r) o.synergy += fx.mag; });
         if (fx.tipo === "hype") { const cap = rows.find((o) => o.captain); if (cap && cap !== r) cap.synergy += Math.round(((cap.base + cap.bonus) * fx.mag) / 100); }
         if (fx.tipo === "analista") { const emps = rows.reduce((s, o) => s + o.perf.emp, 0); r.synergy += emps * fx.mag; }

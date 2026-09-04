@@ -22,6 +22,8 @@ function hash(s: string): number {
 const PLAYER_FX = ["artilheiro", "vencedor", "consistente", "imparavel", "resiliente", "cacagrandes"];
 const CLUB_FX = ["clube", "mentor", "fortaleza"];
 const CASTER_FX = ["hype", "vozdaliga", "analista"];
+const PLAYER_FX_BALANCED = ["cacagrandes", "resiliente", "imparavel", "vencedor", "consistente", "artilheiro"];
+const CLUB_FX_BALANCED = ["fortaleza", "mentor", "clube"];
 
 // mantém em sincronia com FX_MAG em src/App.jsx
 const FX_MAG: Record<Rarity, Record<string, number>> = {
@@ -36,22 +38,31 @@ export function fxTypeFor(card: JornadaCard): string {
   const baseKey = card.isCaster
     ? "cast-" + (card.casterRef || card.id.replace("cast-", ""))
     : card.isClub ? "club-" + card.team : (card.ref ? "pl-" + card.ref : card.id);
-  const baseIdx = hash(baseKey + "fx") % pool.length;
-  if (!card.edition) return pool[baseIdx];
-  const offset = 1 + (hash(card.id + "fx") % (pool.length - 1));
-  return pool[(baseIdx + offset) % pool.length];
+  if (card.isCaster) return pool[hash(baseKey + "fx") % pool.length];
+  const order = card.isClub ? CLUB_FX_BALANCED : PLAYER_FX_BALANCED;
+  const peers = JORNADA_CARDS
+    .filter((candidate) => candidate.rarity === card.rarity && candidate.isClub === card.isClub && !candidate.isCaster)
+    .sort((left, right) => ((right.v || 35) * 0.6 + (right.mg || 4) * 5) - ((left.v || 35) * 0.6 + (left.mg || 4) * 5) || left.id.localeCompare(right.id));
+  const identity = card.edition
+    ? card.isClub ? `club-${card.team}` : card.ref ? `pl-${card.ref}` : card.id
+    : card.id;
+  const rank = Math.max(0, peers.findIndex((candidate) => candidate.id === identity));
+  return order[Math.min(order.length - 1, Math.floor((rank * order.length) / Math.max(1, peers.length)))];
 }
 
 export interface Effect { tipo: string; mag: number }
 export function effectOf(card: JornadaCard): Effect {
+  if (card.customEffect?.tipo && Number.isFinite(Number(card.customEffect.mag))) {
+    return { tipo: card.customEffect.tipo, mag: Number(card.customEffect.mag) };
+  }
   const t = fxTypeFor(card);
   return { tipo: t, mag: FX_MAG[card.rarity][t] };
 }
 
 // mantém em sincronia com SCORING em src/App.jsx
 export const SCORING = {
-  jogador: { vit: 20, emp: 10, der: 2, golo: 3 },
-  clube: { vit: 25, emp: 12, der: 5 },
+  jogador: { vit: 20, emp: 8, der: 3, golo: 2 },
+  clube: { vit: 20, emp: 8, der: 3 },
 };
 
 export interface GameResult { opp: string; oppRank: number; res: "V" | "E" | "D"; g: number; og: number }

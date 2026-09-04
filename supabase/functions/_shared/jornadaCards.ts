@@ -15,6 +15,7 @@ export interface JornadaCard {
   casterRef: string | null;
   v: number | null;
   mg: number | null;
+  customEffect?: { tipo: string; mag: number };
 }
 
 export const JORNADA_CARDS: JornadaCard[] = [

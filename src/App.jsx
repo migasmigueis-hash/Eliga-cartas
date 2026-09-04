@@ -15,6 +15,15 @@ import { supabase } from './lib/supabaseClient';
 const LOGO_BASE = "https://esports.ligaportugal.pt/images/teams/logos/";
 const PHOTO_BASE = "https://esports.ligaportugal.pt/images/teams/players/";
 const ELIGA_LOGO = "https://esports.ligaportugal.pt/images/logo@2x.png";
+let CARD_IMAGE_OVERRIDES = {};
+
+function cardImageUrl(card) {
+  const override = CARD_IMAGE_OVERRIDES[card.id];
+  if (override?.url) return override.url;
+  if (typeof override === "string") return override;
+  if (card.isClub) return card.teamData?.logo ? LOGO_BASE + card.teamData.logo : null;
+  return card.photo ? PHOTO_BASE + card.photo : null;
+}
 
 const TEAMS = [
   { id: "benfica", name: "SL Benfica Esports", short: "SLB", logo: "36y1bm2m34mc080g84.png", color: "#E11B22", rarity: "epica" },
@@ -170,7 +179,8 @@ function buildPool() {
   });
   return cards.map((c) => ({ ...c, teamData: TEAMS.find((t) => t.id === c.team) }));
 }
-const POOL = buildPool();
+const BASE_POOL = buildPool();
+let POOL = BASE_POOL;
 
 // identidade base de uma carta — versões diferentes do mesmo jogador/clube/caster partilham-na
 const cardIdentity = (c) => {
@@ -183,6 +193,7 @@ const cardIdentity = (c) => {
 /* ---------- Escolhas (estilo Wonder Pick): conjunto global de 5 cartas que
    renova de 6 em 6 horas; gasta 1 Escolha para virar, baralhar e escolher às cegas */
 const PICK_SLOT_MS = 6 * 3600 * 1000;
+const PASSIVE_ESCOLHAS_CAP = 10;
 const EMPTY_PREV = { groups: null, qual: [], groupResult: null, bracket: null, qf: [null, null, null, null], sf: [null, null], fin: null, resolved: null, rewardClaimed: false, groupReward: null, groupRewardClaimed: false };
 function mulberry32(a) {
   return function () {
@@ -367,6 +378,8 @@ function buildObjectives(meta, collection) {
 const PLAYER_FX = ["artilheiro", "vencedor", "consistente", "imparavel", "resiliente", "cacagrandes"];
 const CLUB_FX = ["clube", "mentor", "fortaleza"];
 const CASTER_FX = ["hype", "vozdaliga", "analista"];
+const PLAYER_FX_BALANCED = ["cacagrandes", "resiliente", "imparavel", "vencedor", "consistente", "artilheiro"];
+const CLUB_FX_BALANCED = ["fortaleza", "mentor", "clube"];
 const FX_MAG = {
   comum:    { artilheiro: 1, vencedor: 5,  consistente: 10,  imparavel: 8,  resiliente: 4,  cacagrandes: 6,  clube: 15,  mentor: 4,  fortaleza: 3,  hype: 10, vozdaliga: 8,  analista: 5 },
   rara:     { artilheiro: 2, vencedor: 10, consistente: 25,  imparavel: 16, resiliente: 8,  cacagrandes: 12, clube: 30,  mentor: 8,  fortaleza: 6,  hype: 20, vozdaliga: 15, analista: 10 },
@@ -396,12 +409,21 @@ function fxTypeFor(card) {
   const baseKey = card.isCaster
     ? "cast-" + (card.casterRef || card.id.replace("cast-", ""))
     : card.isClub ? "club-" + card.team : (card.ref ? "pl-" + card.ref : card.id);
-  const baseIdx = hash(baseKey + "fx") % pool.length;
-  if (!card.edition) return pool[baseIdx];
-  const offset = 1 + (hash(card.id + "fx") % (pool.length - 1));
-  return pool[(baseIdx + offset) % pool.length];
+  if (card.isCaster) return pool[hash(baseKey + "fx") % pool.length];
+  const order = card.isClub ? CLUB_FX_BALANCED : PLAYER_FX_BALANCED;
+  const peers = BASE_POOL
+    .filter((candidate) => candidate.rarity === card.rarity && candidate.isClub === card.isClub && !candidate.isCaster)
+    .sort((left, right) => ((right.v || 35) * 0.6 + (right.mg || 4) * 5) - ((left.v || 35) * 0.6 + (left.mg || 4) * 5) || left.id.localeCompare(right.id));
+  const identity = card.edition ? cardIdentity(card) : card.id;
+  const rank = Math.max(0, peers.findIndex((candidate) => candidate.id === identity));
+  return order[Math.min(order.length - 1, Math.floor((rank * order.length) / Math.max(1, peers.length)))];
 }
 function effectOf(card) {
+  if (card.customEffect?.tipo && Number.isFinite(Number(card.customEffect.mag))) {
+    const tipo = card.customEffect.tipo;
+    const mag = Number(card.customEffect.mag);
+    return { tipo, mag, label: FX_LABEL[tipo]?.(mag) || card.customEffect.label || `${tipo}: ${mag}` };
+  }
   const t = fxTypeFor(card);
   const m = FX_MAG[card.rarity][t];
   return { tipo: t, mag: m, label: FX_LABEL[t](m) };
@@ -539,7 +561,7 @@ async function cardToPng(card, withImages = true) {
   }
   if (withImages) {
     try {
-      const img = await _loadImg(card.isClub ? LOGO_BASE + card.teamData.logo : PHOTO_BASE + card.photo);
+      const img = await _loadImg(cardImageUrl(card));
       const areaH = H - 260 - topPad;
       const scale = Math.min((W - 120) / img.width, areaH / img.height);
       const iw = img.width * scale, ih = img.height * scale;
@@ -661,30 +683,33 @@ const btn = (primary) => ({
 });
 
 /* ---------- logo de clube com fallback ---------- */
-function ClubLogo({ team, size, dim }) {
+function ClubLogo({ team, size, dim, imageUrl }) {
   const [err, setErr] = useState(false);
+  useEffect(() => setErr(false), [imageUrl]);
   if (!team) return null;
   if (err)
     return (
       <div style={{ width: size, height: size, borderRadius: "50%", background: team.color + "33", border: `2px solid ${team.color}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, fontWeight: 700, fontSize: size * 0.28, color: "#fff" }}>{team.short}</div>
     );
-  return <img src={LOGO_BASE + team.logo} alt={team.name} loading="lazy" onError={() => setErr(true)} style={{ width: size, height: size, objectFit: "contain", filter: dim ? "grayscale(1) brightness(0.45)" : "drop-shadow(0 6px 18px rgba(0,0,0,0.55))" }} draggable={false} />;
+  return <img src={imageUrl || LOGO_BASE + team.logo} alt={team.name} loading="lazy" onError={() => setErr(true)} style={{ width: size, height: size, objectFit: "contain", filter: dim ? "grayscale(1) brightness(0.45)" : "drop-shadow(0 6px 18px rgba(0,0,0,0.55))" }} draggable={false} />;
 }
 
 /* ---------- foto de jogador com fallback para o escudo ---------- */
 function PlayerArt({ card, height, dim }) {
   const [err, setErr] = useState(false);
-  if ((!card.photo || err) && card.isCaster)
+  const imageUrl = cardImageUrl(card);
+  useEffect(() => setErr(false), [imageUrl]);
+  if ((!imageUrl || err) && card.isCaster)
     return (
       <div style={{ height, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: height * 0.04, filter: dim ? "grayscale(1) brightness(0.45)" : "none" }}>
         <div style={{ fontSize: height * 0.34, filter: "drop-shadow(0 8px 18px rgba(57,230,255,0.35))" }}>🎙</div>
         <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: height * 0.13, color: "#39E6FF", letterSpacing: 2, textShadow: "0 0 18px rgba(57,230,255,0.5)" }}>{card.name.split(" ").map((w) => w[0]).join("").toUpperCase()}</div>
       </div>
     );
-  if (!card.photo || err)
+  if (!imageUrl || err)
     return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center" }}><ClubLogo team={card.teamData} size={height * 0.75} dim={dim} /></div>;
   return (
-    <img src={PHOTO_BASE + card.photo} alt={card.name} loading="lazy" onError={() => setErr(true)} draggable={false}
+    <img src={imageUrl} alt={card.name} loading="lazy" onError={() => setErr(true)} draggable={false}
       style={{ height, width: "100%", objectFit: "contain", objectPosition: "bottom center", filter: dim ? "grayscale(1) brightness(0.45)" : "drop-shadow(0 10px 24px rgba(0,0,0,0.6))" }} />
   );
 }
@@ -714,7 +739,7 @@ function Card({ card, width = 220, interactive = true, dim = false, showcase = f
         boxShadow: dim ? "none" : `0 ${10 * fs}px ${30 * fs}px rgba(0,0,0,0.55), 0 0 ${26 * fs}px ${r.glow}`,
         filter: dim ? "grayscale(1) brightness(0.5)" : "none",
       }}>
-        <div style={{ width: "100%", height: "100%", borderRadius: 10 * fs, overflow: "hidden", position: "relative", background: `radial-gradient(120% 90% at 50% 0%, ${card.teamData?.color || "#39E6FF"}40 0%, #0B1226 55%, #060A16 100%)` }}>
+        <div style={{ width: "100%", height: "100%", borderRadius: 10 * fs, overflow: "hidden", position: "relative", background: `radial-gradient(120% 90% at 50% 0%, ${card.customColor || card.teamData?.color || "#39E6FF"}66 0%, #0B1226 55%, #060A16 100%)` }}>
           <div style={{ position: "absolute", inset: 0, opacity: 0.12, backgroundImage: "repeating-linear-gradient(115deg, transparent 0 10px, rgba(255,255,255,0.5) 10px 11px)" }} />
           {card.edition && (
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, background: r.frame, color: "#06101a", fontFamily: FONT, fontWeight: 700, fontSize: 9 * fs, letterSpacing: 2, padding: `${3.5 * fs}px 0`, textAlign: "center", zIndex: 3, whiteSpace: "nowrap", overflow: "hidden" }}>{card.edition}</div>
@@ -726,7 +751,7 @@ function Card({ card, width = 220, interactive = true, dim = false, showcase = f
           {/* arte: foto do jogador ou escudo do clube */}
           {card.isClub ? (
             <div style={{ position: "absolute", top: "22%", left: 0, right: 0, display: "flex", justifyContent: "center", zIndex: 1 }}>
-              <ClubLogo team={card.teamData} size={122 * fs} dim={dim} />
+              <ClubLogo team={card.teamData} size={122 * fs} dim={dim} imageUrl={cardImageUrl(card)} />
             </div>
           ) : (
             <div style={{ position: "absolute", left: 0, right: 0, bottom: 62 * fs, zIndex: 1 }}>
@@ -754,7 +779,7 @@ function Card({ card, width = 220, interactive = true, dim = false, showcase = f
                 ))}
               </div>
             ) : (
-              <div style={{ marginTop: 6 * fs, borderTop: `1px solid ${r.color}55`, paddingTop: 6 * fs, fontSize: 9 * fs, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>ESTREANTE 25/26</div>
+              <div style={{ marginTop: 6 * fs, borderTop: `1px solid ${r.color}55`, paddingTop: 6 * fs, fontSize: 9 * fs, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>{card.id.startsWith("custom-") ? "NOVA CARTA" : "ESTREANTE 25/26"}</div>
             ))}
           </div>
           {!dim && (
@@ -784,6 +809,188 @@ function CardBack({ width = 220 }) {
       <div style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(45deg, transparent 0 14px, rgba(27,245,163,0.06) 14px 15px)" }} />
       <img src={ELIGA_LOGO} alt="eLiga" style={{ width: width * 0.62, opacity: 0.9 }} draggable={false} onError={(e) => (e.target.style.display = "none")} />
     </div>
+  );
+}
+
+const CARD_STUDIO_EFFECTS = [...PLAYER_FX, ...CLUB_FX, ...CASTER_FX];
+const emptyStudioCard = (batchId, index = 1, edition = "Nova edição") => ({
+  id: `custom-${batchId}-${Date.now()}-${index}`,
+  name: `Nova carta ${index}`,
+  team: "benfica",
+  rarity: "rara",
+  isClub: false,
+  isCaster: false,
+  edition,
+  tag: "Nova geração",
+  ovr: 80,
+  customColor: "#1BF5A3",
+  description: "Carta exclusiva da nova edição da eLiga Portugal.",
+  customEffect: { tipo: "vencedor", mag: 10 },
+});
+
+const studioSourceCard = (card) => {
+  const effect = effectOf(card);
+  return {
+    ...card,
+    customColor: card.customColor || RARITY[card.rarity].color,
+    description: card.description || card.tag || "Carta base da eLiga Portugal.",
+    customEffect: card.customEffect || { tipo: effect.tipo, mag: effect.mag },
+  };
+};
+
+function AdminCardStudio({ initialBatches, initialBaseOverrides, baseCards, cardImages, saving, imageBusy, onSave, onSaveBase, onUploadImage, onRemoveImage }) {
+  const makeBatch = () => {
+    const id = `edition-${Date.now()}`;
+    const name = "Nova edição";
+    return { id, name, description: "Cartas exclusivas desta edição", status: "draft", cards: [emptyStudioCard(id, 1, name)] };
+  };
+  const [batches, setBatches] = useState(() => initialBatches || []);
+  const [baseOverrides, setBaseOverrides] = useState(() => initialBaseOverrides || {});
+  const [batchIndex, setBatchIndex] = useState(-1);
+  const [cardIndex, setCardIndex] = useState(0);
+  const baseBatch = { id: "base", name: "Cartas base", description: "Catálogo original da eLiga Portugal", status: "builtin", cards: baseCards.map((item) => studioSourceCard({ ...item, ...(baseOverrides[item.id] || {}), id: item.id, edition: null })) };
+  const isBaseEdition = batchIndex === -1;
+  const batch = isBaseEdition ? baseBatch : batches[batchIndex];
+  const card = batch?.cards?.[cardIndex] || batch?.cards?.[0];
+  const inputStyle = { width: "100%", background: "#07101f", color: "#fff", border: "1px solid #263958", borderRadius: 7, padding: "10px 11px", fontFamily: FONT, outline: "none" };
+  const fieldLabel = { display: "block", fontFamily: FONT, fontSize: 10, letterSpacing: 1.3, color: "#7f93ae", marginBottom: 6 };
+  const updateBatch = (patch) => setBatches((all) => all.map((item, index) => index === batchIndex ? { ...item, ...patch } : item));
+  const updateCard = (patch) => {
+    if (isBaseEdition) {
+      setBaseOverrides((all) => ({ ...all, [card.id]: { ...(all[card.id] || {}), ...patch } }));
+      return;
+    }
+    setBatches((all) => all.map((item, index) => index === batchIndex ? { ...item, cards: item.cards.map((value, ix) => ix === cardIndex ? { ...value, ...patch } : value) } : item));
+  };
+  const addCard = () => {
+    if (isBaseEdition) return;
+    const next = emptyStudioCard(batch.id, batch.cards.length + 1, batch.name);
+    updateBatch({ cards: [...batch.cards, next] });
+    setCardIndex(batch.cards.length);
+  };
+  const duplicateCard = () => {
+    if (isBaseEdition) {
+      const next = makeBatch();
+      next.cards = [{ ...card, id: `custom-${next.id}-${Date.now()}`, edition: next.name, customEffect: { ...card.customEffect } }];
+      setBatches((all) => [...all, next]);
+      setBatchIndex(batches.length);
+      setCardIndex(0);
+      return;
+    }
+    const copy = { ...card, id: `custom-${batch.id}-${Date.now()}`, name: `${card.name} cópia`, customEffect: { ...card.customEffect } };
+    updateBatch({ cards: [...batch.cards, copy] });
+    setCardIndex(batch.cards.length);
+  };
+  const removeCard = () => {
+    if (isBaseEdition || batch.cards.length === 1) return;
+    updateBatch({ cards: batch.cards.filter((_, index) => index !== cardIndex) });
+    setCardIndex(Math.max(0, cardIndex - 1));
+  };
+  const addBatch = () => {
+    const next = makeBatch();
+    setBatches((all) => [...all, next]);
+    setBatchIndex(batches.length);
+    setCardIndex(0);
+  };
+  const selectBatch = (value) => { setBatchIndex(value === "base" ? -1 : batches.findIndex((item) => item.id === value)); setCardIndex(0); };
+  const renameBatch = (name) => updateBatch({ name, cards: batch.cards.map((item) => ({ ...item, edition: name })) });
+  const changeCardEdition = (targetId) => {
+    const targetIndex = batches.findIndex((item) => item.id === targetId);
+    if (targetIndex < 0 || targetIndex === batchIndex) return;
+    const target = batches[targetIndex];
+    const movedCard = { ...card, id: isBaseEdition ? `custom-${target.id}-${Date.now()}` : card.id, edition: target.name, customEffect: { ...card.customEffect } };
+    setBatches((all) => all.map((item, index) => {
+      if (!isBaseEdition && index === batchIndex) return { ...item, cards: item.cards.filter((_, ix) => ix !== cardIndex) };
+      if (index === targetIndex) return { ...item, cards: [...item.cards, movedCard] };
+      return item;
+    }));
+    setBatchIndex(targetIndex);
+    setCardIndex(target.cards.length);
+  };
+  const teamData = TEAMS.find((team) => team.id === card?.team);
+  const previewCard = card ? { ...card, teamData, role: card.isCaster ? "CASTER" : undefined, j: null, v: null, mg: null } : null;
+  const hasConfiguredImage = !!cardImages?.[card?.id];
+
+  return (
+    <section className="card-studio">
+      <aside className="studio-sidebar">
+        <div className="studio-eyebrow">EDIÇÃO</div>
+        <select className="studio-edition-select" value={isBaseEdition ? "base" : batch.id} onChange={(e) => selectBatch(e.target.value)} aria-label="Selecionar edição">
+          <option value="base">Cartas base · {baseBatch.cards.length}</option>
+          {batches.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.cards.length} · {item.status === "published" ? "Publicada" : "Draft"}</option>)}
+        </select>
+        <button className="studio-secondary" onClick={addBatch}>+ Nova edição</button>
+        <div className="studio-divider" />
+        <div className="studio-eyebrow">CARTAS DA EDIÇÃO</div>
+        <div className="studio-card-list">
+          {batch.cards.map((item, index) => (
+            <button key={item.id} className={`studio-card-row ${index === cardIndex ? "active" : ""}`} onClick={() => setCardIndex(index)}>
+              <span className="studio-rating">{item.ovr}</span><span>{item.name}<small>{RARITY[item.rarity]?.label}</small></span>
+            </button>
+          ))}
+        </div>
+        {!isBaseEdition && <button className="studio-add-card" onClick={addCard}>+ Adicionar carta</button>}
+      </aside>
+
+      <div className="studio-workspace">
+        <header className="studio-header">
+          <div>
+            <div className="studio-eyebrow">ESTÚDIO DE CARTAS</div>
+            <input value={batch.name} disabled={isBaseEdition} onChange={(e) => renameBatch(e.target.value)} className="studio-title-input" aria-label="Nome da edição" />
+            <input value={batch.description} disabled={isBaseEdition} onChange={(e) => updateBatch({ description: e.target.value })} className="studio-subtitle-input" aria-label="Descrição da edição" />
+          </div>
+          <div className="studio-actions">
+            <button className="studio-secondary" onClick={duplicateCard}>{isBaseEdition ? "Criar variante" : "Duplicar"}</button>
+            {isBaseEdition && <button className="studio-publish" disabled={saving} onClick={() => onSaveBase(baseOverrides)}>{saving ? "A guardar..." : "Guardar alterações"}</button>}
+            {!isBaseEdition && <button className="studio-danger" onClick={removeCard} disabled={batch.cards.length === 1}>Eliminar</button>}
+            {!isBaseEdition && <button className="studio-publish" disabled={saving} onClick={() => { const next = batches.map((item, index) => index === batchIndex ? { ...item, status: "published", cards: item.cards.map((value) => ({ ...value, edition: item.name })) } : item); setBatches(next); onSave(next); }}>{saving ? "A guardar..." : batch.status === "published" ? "Guardar alterações" : "Publicar edição"}</button>}
+          </div>
+        </header>
+
+        <div className="studio-editor">
+          <div className="studio-form">
+            <div className="studio-section-title"><span>01</span> Identidade</div>
+            {isBaseEdition && <div className="studio-source-note">Podes editar esta carta diretamente. O ID original mantém-se para preservar coleções e histórico.</div>}
+            <div className="studio-grid two">
+              <label><span style={fieldLabel}>NOME</span><input style={inputStyle} value={card.name} onChange={(e) => updateCard({ name: e.target.value })} /></label>
+              <label><span style={fieldLabel}>TIPO</span><select style={inputStyle} value={card.isClub ? "club" : card.isCaster ? "caster" : "player"} onChange={(e) => updateCard({ isClub: e.target.value === "club", isCaster: e.target.value === "caster" })}><option value="player">Jogador</option><option value="club">Clube</option><option value="caster">Caster</option></select></label>
+              <label><span style={fieldLabel}>CLUBE</span><select style={inputStyle} value={card.team || ""} onChange={(e) => updateCard({ team: e.target.value || null })}><option value="">Sem clube</option>{TEAMS.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label>
+              <label><span style={fieldLabel}>EDIÇÃO</span><select style={inputStyle} value={isBaseEdition ? "base" : batch.id} onChange={(e) => changeCardEdition(e.target.value)}><option value="base" disabled>Cartas base</option>{batches.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            </div>
+
+            <div className="studio-section-title"><span>02</span> Visual</div>
+            <div className="studio-grid two">
+              <label><span style={fieldLabel}>COR PRINCIPAL</span><div className="studio-color"><input type="color" value={card.customColor} onChange={(e) => updateCard({ customColor: e.target.value })} /><input style={inputStyle} value={card.customColor} onChange={(e) => updateCard({ customColor: e.target.value })} /></div></label>
+              <label><span style={fieldLabel}>RARIDADE</span><select style={inputStyle} value={card.rarity} onChange={(e) => updateCard({ rarity: e.target.value })}>{Object.entries(RARITY).map(([key, value]) => <option key={key} value={key}>{value.label}</option>)}</select></label>
+              <div className="studio-file">
+                <span style={fieldLabel}>FOTOGRAFIA</span>
+                <div className="studio-photo-actions">
+                  <label className="studio-upload">{imageBusy === card.id ? "A guardar..." : hasConfiguredImage ? "Substituir fotografia" : "Escolher fotografia"}<input type="file" accept="image/png,image/jpeg,image/webp" disabled={imageBusy === card.id} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; onUploadImage(card, file); }} /></label>
+                  {hasConfiguredImage && <button type="button" className="studio-remove-photo" disabled={imageBusy === card.id} onClick={() => onRemoveImage(card)}>Remover</button>}
+                </div>
+                <small className={`studio-photo-status ${hasConfiguredImage ? "configured" : ""}`}>{hasConfiguredImage ? "Fotografia configurada" : "PNG, JPEG ou WebP · máximo 5 MB"}</small>
+              </div>
+              <label><span style={fieldLabel}>DESTAQUE</span><input style={inputStyle} value={card.tag || ""} onChange={(e) => updateCard({ tag: e.target.value })} /></label>
+            </div>
+
+            <div className="studio-section-title"><span>03</span> Jogo</div>
+            <div className="studio-grid rating-effect">
+              <label><span style={fieldLabel}>RATING</span><input style={inputStyle} type="number" min="1" max="99" value={card.ovr} onChange={(e) => updateCard({ ovr: Math.max(1, Math.min(99, Number(e.target.value))) })} /></label>
+              <label><span style={fieldLabel}>EFEITO</span><select style={inputStyle} value={card.customEffect.tipo} onChange={(e) => updateCard({ customEffect: { ...card.customEffect, tipo: e.target.value } })}>{CARD_STUDIO_EFFECTS.map((effect) => <option key={effect} value={effect}>{FX_LABEL[effect](card.customEffect.mag).split(":")[0]}</option>)}</select></label>
+              <label><span style={fieldLabel}>INTENSIDADE</span><div className="studio-stepper"><button onClick={() => updateCard({ customEffect: { ...card.customEffect, mag: Number(card.customEffect.mag) - 1 } })}>−</button><input style={inputStyle} type="number" value={card.customEffect.mag} onChange={(e) => updateCard({ customEffect: { ...card.customEffect, mag: Number(e.target.value) } })} /><button onClick={() => updateCard({ customEffect: { ...card.customEffect, mag: Number(card.customEffect.mag) + 1 } })}>+</button></div></label>
+            </div>
+            <div className="studio-effect-preview">{effectOf(previewCard).label}</div>
+            <label><span style={fieldLabel}>DESCRIÇÃO</span><textarea style={{ ...inputStyle, minHeight: 92, resize: "vertical", lineHeight: 1.5 }} maxLength={220} value={card.description || ""} onChange={(e) => updateCard({ description: e.target.value })} /><small className="studio-count">{(card.description || "").length}/220</small></label>
+          </div>
+
+          <div className="studio-preview">
+            <div className="studio-eyebrow">PREVIEW EM TEMPO REAL</div>
+            <Card card={previewCard} width={260} showcase />
+            <div className="studio-preview-copy"><strong>{card.description}</strong><span>{effectOf(previewCard).label}</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1049,6 +1256,75 @@ function AuthScreen({ onLogin }) {
   );
 }
 
+function ProfileEditor({ username, onUsernameChange }) {
+  const [form, setForm] = useState({ username, email: "", fullName: "", location: "", bio: "" });
+  const [originalEmail, setOriginalEmail] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+  const input = { width: "100%", boxSizing: "border-box", padding: "11px 12px", borderRadius: 7, border: "1px solid #263958", background: "#07101f", color: "#fff", fontFamily: FONT, outline: "none" };
+  const fieldLabel = { display: "block", fontFamily: FONT, fontSize: 10, letterSpacing: 1.3, color: "#7f93ae", marginBottom: 6 };
+  const panel = { background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: 18 };
+
+  useEffect(() => {
+    let active = true;
+    supabase.auth.getUser().then(({ data }) => {
+      if (!active || !data.user) return;
+      const metadata = data.user.user_metadata || {};
+      const email = data.user.email || "";
+      setOriginalEmail(email);
+      setForm({ username, email, fullName: metadata.full_name || "", location: metadata.location || "", bio: metadata.bio || "" });
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, [username]);
+
+  const change = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const save = async () => {
+    const nextUsername = form.username.trim().toLowerCase();
+    const nextEmail = form.email.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,16}$/.test(nextUsername)) { setMessage({ ok: false, text: "O nome de utilizador deve ter 3–16 caracteres: letras, números ou _." }); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) { setMessage({ ok: false, text: "Indica um email válido." }); return; }
+    if (form.fullName.length > 80 || form.location.length > 80 || form.bio.length > 240) { setMessage({ ok: false, text: "Revê o tamanho das informações pessoais." }); return; }
+    setSaving(true); setMessage(null);
+    const { error: profileError } = await supabase.rpc("update_own_profile", { p_username: nextUsername });
+    if (profileError) {
+      setSaving(false);
+      setMessage({ ok: false, text: /unique|duplicate/i.test(profileError.message) ? "Esse nome de utilizador já está ocupado." : profileError.message });
+      return;
+    }
+    const emailChanged = nextEmail !== originalEmail;
+    const updates = { data: { username: nextUsername, full_name: form.fullName.trim(), location: form.location.trim(), bio: form.bio.trim() } };
+    if (emailChanged) updates.email = nextEmail;
+    const { data, error: authError } = await supabase.auth.updateUser(updates);
+    setSaving(false);
+    if (authError) { setMessage({ ok: false, text: authErrorMessage(authError) }); return; }
+    onUsernameChange(nextUsername);
+    const confirmedEmail = data.user?.email || originalEmail;
+    setOriginalEmail(confirmedEmail);
+    setMessage({ ok: true, text: emailChanged ? "Perfil guardado. Confirma o novo email através da mensagem que recebeste." : "Perfil guardado." });
+  };
+
+  if (loading) return <div style={{ ...panel, marginTop: 18, color: "#8fa3bd" }}>A carregar dados da conta…</div>;
+  return (
+    <section style={{ ...panel, marginTop: 18 }}>
+      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 15, color: "#fff", marginBottom: 4 }}>Dados da conta</div>
+      <div style={{ fontSize: 12, color: "#6f87a8", marginBottom: 16 }}>O nome de utilizador é público. As restantes informações são privadas.</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+        <label><span style={fieldLabel}>NOME DE UTILIZADOR</span><input style={input} value={form.username} maxLength={16} onChange={(event) => change("username", event.target.value)} /></label>
+        <label><span style={fieldLabel}>EMAIL</span><input style={input} type="email" value={form.email} onChange={(event) => change("email", event.target.value)} /></label>
+        <label><span style={fieldLabel}>NOME COMPLETO</span><input style={input} value={form.fullName} maxLength={80} onChange={(event) => change("fullName", event.target.value)} /></label>
+        <label><span style={fieldLabel}>LOCALIDADE</span><input style={input} value={form.location} maxLength={80} onChange={(event) => change("location", event.target.value)} /></label>
+      </div>
+      <label style={{ display: "block", marginTop: 14 }}><span style={fieldLabel}>BIOGRAFIA</span><textarea style={{ ...input, minHeight: 82, resize: "vertical", lineHeight: 1.5 }} value={form.bio} maxLength={240} onChange={(event) => change("bio", event.target.value)} /></label>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
+        <button onClick={save} disabled={saving} style={{ ...btn(true), opacity: saving ? 0.55 : 1 }}>{saving ? "A guardar…" : "Guardar perfil"}</button>
+        {message && <span style={{ fontSize: 12, color: message.ok ? "#1BF5A3" : "#ff8292" }}>{message.text}</span>}
+      </div>
+    </section>
+  );
+}
+
 /* ---------- um conjunto de Escolhas: junta no meio, baralha, separa, escolhe ---------- */
 function WonderBoard({ idx, board, boardKey, used, canUse, muted, onPick, nextIn, cost = 1, premium = false }) {
   const [phase, setPhase] = useState("idle"); // idle | stack | pick | revealed
@@ -1154,12 +1430,33 @@ function App() {
   const [pickSlot, setPickSlot] = useState(null);
   const [compResult, setCompResult] = useState(null);
   const [ligaConfig, setLigaConfig] = useState(null); // config da liga (modo, etapa, fase, grupo)
+  CARD_IMAGE_OVERRIDES = ligaConfig?.cardImages || {};
+  const runtimeBaseCards = BASE_POOL.map((card) => {
+    if (card.edition) return card;
+    const override = ligaConfig?.baseCardOverrides?.[card.id] || {};
+    return { ...card, ...override, id: card.id, edition: null, teamData: TEAMS.find((team) => team.id === (override.team ?? card.team)) };
+  });
+  const publishedBatch = ligaConfig?.customBatches?.find((batch) => batch.status === "published");
+  const publishedCards = publishedBatch?.cards?.map((card) => ({ ...card, teamData: TEAMS.find((team) => team.id === card.team) })) || [];
+  POOL = [...runtimeBaseCards, ...publishedCards];
+  const etapa1Pack = PACKS.find((pack) => pack.id === "etapa1");
+  if (etapa1Pack) {
+    etapa1Pack.locked = !publishedBatch;
+    etapa1Pack.lockLabel = publishedBatch ? null : "Fevereiro 2027";
+    etapa1Pack.name = publishedBatch?.name || "Pack Etapa 1 · 26/27";
+    etapa1Pack.sub = publishedBatch ? `${publishedCards.length} carta${publishedCards.length !== 1 ? "s exclusivas" : " exclusiva"}` : "Cartas únicas da Etapa 1";
+    etapa1Pack.desc = publishedBatch?.description || "Disponível com o arranque da nova época, em fevereiro de 2027.";
+    etapa1Pack.accent = publishedCards[0]?.customColor || "#6f87a8";
+    etapa1Pack.twitchCost = publishedBatch ? 150 : undefined;
+  }
   const [adminSyncLog, setAdminSyncLog] = useState(null); // resultado do último sync
   const [adminSyncing, setAdminSyncing] = useState(false);
   const [adminConfigSaving, setAdminConfigSaving] = useState(false);
   const [adminAvalLog, setAdminAvalLog] = useState(null); // resultado da última avaliação de previsões
   const [adminAvaliando, setAdminAvaliando] = useState(false);
   const [adminProximaFaseAtivo, setAdminProximaFaseAtivo] = useState(false);
+  const [adminImageBusy, setAdminImageBusy] = useState(null);
+  const [adminSection, setAdminSection] = useState("competicao");
 
   // ordem das fases: etapa1 A/B/C/elim → etapa2 A/B/C/elim → etapa3 A/B/C/elim → finals
   const FASES_ORDEM = [
@@ -1223,11 +1520,19 @@ function App() {
   const [opening, setOpening] = useState(null);
   const [filter, setFilter] = useState("todas");
   const [clubFilter, setClubFilter] = useState("todos");
+  const [batchFilter, setBatchFilter] = useState("todos");
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("raridade");
   const [pickClub, setPickClub] = useState("todos");
   const [zoom, setZoom] = useState(null);
   const loaded = useRef(false);
+
+  useEffect(() => {
+    if (!zoom) return undefined;
+    const closeOnEscape = (event) => { if (event.key === "Escape") setZoom(null); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [zoom]);
 
   // sessão Supabase Auth + bump global das Escolhas
   useEffect(() => {
@@ -1319,7 +1624,7 @@ function App() {
       setHist(st.hist || []);
       setCodesUsed(st.codesUsed || []);
       // contas novas (sem progresso anterior) arrancam com 5 Escolhas de oferta
-      setEscolhas(st.escolhas !== undefined ? st.escolhas : 5);
+      setEscolhas(Math.min(PASSIVE_ESCOLHAS_CAP, st.escolhas !== undefined ? st.escolhas : 5));
       setEscSlot(st.escSlot ?? Math.floor(Date.now() / PICK_SLOT_MS));
       setPicksUsed(st.picksUsed || {});
       setJHist(st.jHist || []);
@@ -1440,7 +1745,7 @@ function App() {
       }
       setMeta(data.meta);
       setEscolhas(data.escolhas);
-      setToast(`+${n} Escolha${n > 1 ? "s" : ""}! 🎯 Usa-as no separador Escolhas.`); setTimeout(() => setToast(null), 2800);
+      setToast(`+${data.amount} Escolha${data.amount > 1 ? "s" : ""}! 🎯 Usa-as no separador Escolhas.`); setTimeout(() => setToast(null), 2800);
     } else {
       openPack(PACKS.find((p) => p.id === o.reward) || PACKS[0], { id: o.id, periodo: o.periodo });
     }
@@ -1846,10 +2151,45 @@ function App() {
     setAdminConfigSaving(false);
     if (message) {
       setLigaConfig((prev) => ({ ...(prev || {}), ...Object.fromEntries(Object.keys(patch).map((k) => [k, prev?.[k]])) }));
-      setToast(message); setTimeout(() => setToast(null), 2600); return;
+      setToast(message); setTimeout(() => setToast(null), 2600); return false;
     }
     setLigaConfig(data.config);
     setToast("Configuração guardada."); setTimeout(() => setToast(null), 1800);
+    return true;
+  };
+
+  const adminUploadCardImage = async (card, file) => {
+    if (!file) return;
+    const extensions = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+    const extension = extensions[file.type];
+    if (!extension) { setToast("Usa uma imagem PNG, JPEG ou WebP."); setTimeout(() => setToast(null), 2600); return; }
+    if (file.size > 5 * 1024 * 1024) { setToast("A imagem não pode ultrapassar 5 MB."); setTimeout(() => setToast(null), 2600); return; }
+
+    setAdminImageBusy(card.id);
+    const oldImage = ligaConfig?.cardImages?.[card.id];
+    const path = `cards/${card.id}.${extension}`;
+    const { error } = await supabase.storage.from("card-images").upload(path, file, { upsert: true, contentType: file.type, cacheControl: "3600" });
+    if (error) {
+      setAdminImageBusy(null);
+      setToast(`Erro ao enviar imagem: ${error.message}`); setTimeout(() => setToast(null), 3200); return;
+    }
+
+    const { data } = supabase.storage.from("card-images").getPublicUrl(path);
+    const cardImages = { ...(ligaConfig?.cardImages || {}), [card.id]: { path, url: `${data.publicUrl}?v=${Date.now()}` } };
+    const saved = await adminSaveConfig({ cardImages });
+    if (saved && oldImage?.path && oldImage.path !== path) await supabase.storage.from("card-images").remove([oldImage.path]);
+    setAdminImageBusy(null);
+  };
+
+  const adminRemoveCardImage = async (card) => {
+    const current = ligaConfig?.cardImages?.[card.id];
+    if (!current) return;
+    setAdminImageBusy(card.id);
+    const cardImages = { ...(ligaConfig?.cardImages || {}) };
+    delete cardImages[card.id];
+    const saved = await adminSaveConfig({ cardImages });
+    if (saved && current.path) await supabase.storage.from("card-images").remove([current.path]);
+    setAdminImageBusy(null);
   };
 
   // auto-correção: se o config está em "grupos" sem grupo válido ("?"), persiste "A"
@@ -1985,16 +2325,19 @@ function App() {
     return true;
   };
 
-  // regeneração passiva: +1 Escolha a cada 6 horas (acumula até 8 em ausências longas)
+  // regeneração passiva: +1 por cada bloco de 6 horas decorrido, até ao limite de 10
   useEffect(() => {
     if (!username || escSlot === null) return;
     if (pickSlotNow > escSlot) {
-      const gain = Math.min(8, pickSlotNow - escSlot);
-      setEscolhas((e) => e + gain);
+      const elapsedSlots = pickSlotNow - escSlot;
+      const gain = Math.min(elapsedSlots, Math.max(0, PASSIVE_ESCOLHAS_CAP - escolhas));
+      if (gain > 0) {
+        setEscolhas((current) => Math.min(PASSIVE_ESCOLHAS_CAP, current + elapsedSlots));
+        setToast(`+${gain} Escolha${gain > 1 ? "s" : ""}! 🎯 (regeneras 1 a cada 6h)`); setTimeout(() => setToast(null), 2800);
+      }
       setEscSlot(pickSlotNow);
-      setToast(`+${gain} Escolha${gain > 1 ? "s" : ""} 🎯 (regeneras 1 a cada 6h)`); setTimeout(() => setToast(null), 2800);
     }
-  }, [pickSlotNow, escSlot, username]);
+  }, [pickSlotNow, escSlot, escolhas, username]);
 
   // atualizar o ranking ao abrir a tab Ranking
   useEffect(() => { if (tab === "ranking" && username) refreshRanking(); }, [tab, username]);
@@ -2008,7 +2351,9 @@ function App() {
     setTimeout(() => setToast(null), 2600);
   };
 
-  const ownedCount = Object.keys(collection).filter((k) => collection[k] > 0).length;
+  const ownedCount = POOL.filter((card) => collection[card.id] > 0).length;
+  const publishedBatches = (ligaConfig?.customBatches || []).filter((batch) => batch.status === "published");
+  const customBatchCardIds = new Set(publishedBatches.flatMap((batch) => batch.cards.map((card) => card.id)));
   const filtered = useMemo(() => {
     let list = POOL;
     if (filter === "jogadores") list = list.filter((c) => !c.isClub && !c.isCaster && !c.edition);
@@ -2016,6 +2361,12 @@ function App() {
     if (filter === "casters") list = list.filter((c) => c.isCaster && !c.edition);
     if (filter === "especiais") list = list.filter((c) => c.edition);
     if (clubFilter !== "todos") list = list.filter((c) => (clubFilter === "casters" ? c.isCaster : c.team === clubFilter));
+    if (batchFilter === "base") list = list.filter((c) => !customBatchCardIds.has(c.id));
+    if (batchFilter !== "todos" && batchFilter !== "base") {
+      const batch = publishedBatches.find((item) => item.id === batchFilter);
+      const cardIds = new Set(batch?.cards.map((card) => card.id) || []);
+      list = list.filter((c) => cardIds.has(c.id));
+    }
     if (search.trim()) { const s = search.trim().toLowerCase(); list = list.filter((c) => c.name.toLowerCase().includes(s)); }
     const order = { lendaria: 0, epica: 1, rara: 2, comum: 3 };
     const sorters = {
@@ -2025,7 +2376,7 @@ function App() {
       clube: (a, b) => (a.teamData?.name || "zzz").localeCompare(b.teamData?.name || "zzz") || order[a.rarity] - order[b.rarity],
     };
     return [...list].sort(sorters[sortBy] || sorters.raridade);
-  }, [filter, clubFilter, search, sortBy]);
+  }, [filter, clubFilter, batchFilter, search, sortBy, ligaConfig]);
 
   const clubSelect = (value, onChange) => (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "0 6px 0 12px", borderRadius: 99, border: `1px solid ${value !== "todos" ? "#1BF5A3" : "#22304d"}`, background: "#0A1126" }}>
@@ -2037,6 +2388,18 @@ function App() {
         <option value="todos">Todos os clubes</option>
         <option value="casters">🎙 Casters</option>
         {TEAMS.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+      </select>
+    </span>
+  );
+
+  const batchSelect = (value, onChange) => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "0 6px 0 12px", borderRadius: 99, border: `1px solid ${value !== "todos" ? "#1BF5A3" : "#22304d"}`, background: "#0A1126" }}>
+      <span style={{ fontFamily: FONT, fontSize: 9, letterSpacing: 1.2, color: value !== "todos" ? "#1BF5A3" : "#6f87a8" }}>BATCH</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} aria-label="Filtrar por batch"
+        style={{ fontFamily: FONT, fontSize: 12, padding: "8px 4px", cursor: "pointer", border: "none", background: "transparent", color: value !== "todos" ? "#1BF5A3" : "#9FB0C8", maxWidth: 210, outline: "none" }}>
+        <option value="todos">Todos os batches</option>
+        <option value="base">Coleção base · 25/26</option>
+        {publishedBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.name} · {batch.cards.length}</option>)}
       </select>
     </span>
   );
@@ -2555,7 +2918,7 @@ function App() {
             <div>
               <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: 0 }}>Escolhas</h1>
               <p style={{ color: "#8fa3bd", fontSize: 14, marginTop: 6, maxWidth: 620 }}>
-                Três conjuntos de 5 cartas, renovados a cada 6 horas. Em cada conjunto podes gastar 1 Escolha: as cartas juntam-se, baralham, e escolhes uma às cegas. Regeneras 1 Escolha a cada 6h, mais bónus nos objetivos e códigos.
+                Três conjuntos de 5 cartas, renovados a cada 6 horas. Em cada conjunto podes gastar 1 Escolha: as cartas juntam-se, baralham, e escolhes uma às cegas. Regeneras sempre 1 Escolha por cada 6h decorridas, até ao limite de 10; objetivos e códigos respeitam o mesmo limite.
               </p>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -3129,6 +3492,8 @@ function App() {
             <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: 0 }}>Perfil de {username}</h1>
             <p style={{ color: "#8fa3bd", fontSize: 14, marginTop: 6 }}>{desbloq}/{conquistas.length} conquistas desbloqueadas · {ownedCount}/{POOL.length} cartas</p>
 
+            <ProfileEditor username={username} onUsernameChange={setUsername} />
+
             {/* conta Twitch */}
             <div style={{ marginTop: 18, background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
               <span style={{ fontSize: 22 }}>🟣</span>
@@ -3208,11 +3573,12 @@ function App() {
               <div style={{ fontSize: 12, color: "#8fa3bd", marginTop: 6 }}>{ownedCount} de {POOL.length} cartas</div>
               <div style={{ fontSize: 11, color: "#6f87a8", marginTop: 4 }}>Nas cartas de jogador: <b style={{ color: "#9FB0C8" }}>J</b> jogos · <b style={{ color: "#9FB0C8" }}>%V</b> percentagem de vitórias · <b style={{ color: "#9FB0C8" }}>G/J</b> golos por jogo (época 25/26)</div>
             </div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", flex: "1 1 520px", minWidth: 0, maxWidth: "100%" }}>
               {[["todas", "Todas"], ["jogadores", "Jogadores"], ["clubes", "Clubes"], ["casters", "Casters"], ["especiais", "Especiais"]].map(([k, label]) => (
                 <button key={k} onClick={() => setFilter(k)} style={{ fontFamily: FONT, fontSize: 12, padding: "7px 14px", borderRadius: 99, cursor: "pointer", border: `1px solid ${filter === k ? "#1BF5A3" : "#22304d"}`, background: filter === k ? "#1BF5A322" : "transparent", color: filter === k ? "#1BF5A3" : "#9FB0C8" }}>{label}</button>
               ))}
               {clubSelect(clubFilter, setClubFilter)}
+              {batchSelect(batchFilter, setBatchFilter)}
             </div>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 22 }}>
@@ -3242,8 +3608,11 @@ function App() {
                 </div>
               );
             };
-            const albumMode = filter === "todas" && clubFilter === "todos" && !search.trim() && sortBy === "raridade";
+            const albumMode = filter === "todas" && clubFilter === "todos" && batchFilter === "todos" && !search.trim() && sortBy === "raridade";
             if (!albumMode) {
+              if (!filtered.length) {
+                return <div style={{ textAlign: "center", color: "#6f87a8", fontSize: 13, padding: "50px 0" }}>Nenhuma carta encontrada com estes filtros.</div>;
+              }
               return (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 18 }}>
                   {filtered.map(cell)}
@@ -3481,10 +3850,32 @@ function App() {
           </select>
         );
         return (
-          <main style={{ maxWidth: 700, margin: "0 auto", padding: "36px 20px 80px" }}>
+          <main style={{ maxWidth: adminSection === "studio" ? 1380 : 700, margin: "0 auto", padding: "36px 20px 80px" }}>
             <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: "0 0 6px" }}>⚙ Painel Admin</h1>
             <p style={{ color: "#6f87a8", fontSize: 13, marginBottom: 28 }}>Configuração da competição e sincronização de dados.</p>
 
+            <div style={{ display: "flex", gap: 6, marginBottom: 20, padding: 4, background: "#0E162E", border: "1px solid #22304d", borderRadius: 10 }}>
+              {[["competicao", "Competição"], ["studio", "Estúdio de cartas"]].map(([key, text]) => (
+                <button key={key} onClick={() => setAdminSection(key)} style={{ ...btn(adminSection === key), flex: 1, padding: "10px 14px", border: "none", color: adminSection === key ? "#04140c" : "#9FB0C8" }}>{text}</button>
+              ))}
+            </div>
+
+            {adminSection === "studio" && (
+              <AdminCardStudio
+                initialBatches={ligaConfig?.customBatches || []}
+                initialBaseOverrides={ligaConfig?.baseCardOverrides || {}}
+                baseCards={runtimeBaseCards.filter((card) => !card.edition)}
+                cardImages={ligaConfig?.cardImages || {}}
+                saving={adminConfigSaving}
+                imageBusy={adminImageBusy}
+                onSave={(customBatches) => adminSaveConfig({ customBatches })}
+                onSaveBase={(baseCardOverrides) => adminSaveConfig({ baseCardOverrides })}
+                onUploadImage={adminUploadCardImage}
+                onRemoveImage={adminRemoveCardImage}
+              />
+            )}
+
+            <div style={{ display: adminSection === "competicao" ? "block" : "none" }}>
             {/* ESTADO ATUAL */}
             <div style={card16}>
               {label("ESTADO ATUAL")}
@@ -3753,6 +4144,7 @@ function App() {
                 style={{ display: "inline-block", ...btn(false), fontSize: 13, textDecoration: "none" }}>
                 Abrir Supabase Dashboard ↗
               </a>
+            </div>
             </div>
           </main>
         );
