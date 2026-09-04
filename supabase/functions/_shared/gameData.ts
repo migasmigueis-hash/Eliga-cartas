@@ -50,12 +50,18 @@ export interface PackDef {
   locked: boolean;
   specialBoost: 0 | 1;
   twitchCost?: number;
+  edition?: string;
 }
 
 // mantém os ids/nomes/locked/specialBoost/twitchCost em sincronia com PACKS em src/App.jsx
 export const PACKS: PackDef[] = [
   { id: "base", name: "Pack Base", locked: false, specialBoost: 0, twitchCost: 50 },
-  { id: "finals", name: "Pack Finals 25/26", locked: false, specialBoost: 1, twitchCost: 150 },
+  { id: "finals", name: "Pack Finals 25/26", locked: false, specialBoost: 1, twitchCost: 150, edition: "FINALS 25/26" },
+  { id: "taca25", name: "Pack Taça eLiga 25/26", locked: false, specialBoost: 1, twitchCost: 150, edition: "TAÇA eLIGA" },
+  { id: "etapa1-25", name: "Pack Etapa 1 · 25/26", locked: false, specialBoost: 1, twitchCost: 150, edition: "ETAPA 1" },
+  { id: "etapa2-25", name: "Pack Etapa 2 · 25/26", locked: false, specialBoost: 1, twitchCost: 150, edition: "ETAPA 2" },
+  { id: "etapa3-25", name: "Pack Etapa 3 · 25/26", locked: false, specialBoost: 1, twitchCost: 150, edition: "ETAPA 3" },
+  { id: "grande-final-25", name: "Pack Grande Final 25/26", locked: false, specialBoost: 1, twitchCost: 150, edition: "GRANDE FINAL" },
   { id: "etapa1", name: "Pack Etapa 1 · 26/27", locked: true, specialBoost: 0 },
   { id: "taca", name: "Pack Taça eLiga 26/27", locked: true, specialBoost: 0 },
 ];
@@ -87,10 +93,25 @@ export function randomOfRarity(rarity: Rarity, preferSpecial: boolean): CardRef 
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
+function randomOfRarityFromPool(rarity: Rarity, pool: CardRef[]): CardRef {
+  let candidates = pool.filter((card) => card.rarity === rarity);
+  if (!candidates.length && rarity === "lendaria") candidates = pool.filter((card) => card.rarity === "epica");
+  if (!candidates.length) candidates = pool;
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
 export function drawPack(pack: PackDef, cardPool: CardRef[] = CARD_POOL): CardRef[] {
-  if (cardPool !== CARD_POOL) {
+  const editionPool = pack.edition ? CARD_POOL.filter((card) => card.edition === pack.edition) : null;
+  if (cardPool !== CARD_POOL || editionPool) {
+    const effectivePool = cardPool !== CARD_POOL ? cardPool : editionPool!;
     return [0, 1, 2]
-      .map(() => cardPool[Math.floor(Math.random() * cardPool.length)])
+      .map(() => effectivePool[Math.floor(Math.random() * effectivePool.length)])
+      .sort((a, b) => RARITY_ORDER[a.rarity] - RARITY_ORDER[b.rarity]);
+  }
+  if (pack.id === "base") {
+    const basePool = CARD_POOL.filter((card) => !card.edition);
+    return [0, 1, 2]
+      .map(() => randomOfRarityFromPool(rollRarity(pack.specialBoost), basePool))
       .sort((a, b) => RARITY_ORDER[a.rarity] - RARITY_ORDER[b.rarity]);
   }
   const cards = [0, 1, 2].map(() => randomOfRarity(rollRarity(pack.specialBoost), !!pack.specialBoost));
@@ -186,9 +207,10 @@ export function applyPackOpening(state: Record<string, unknown>, pack: PackDef, 
 
   let cards: CardRef[] = drawPack(pack, cardPool);
   const pity = (meta.pity as number) || 0;
-  if (cardPool === CARD_POOL && !hasEpicPlus(cards) && pity + 1 >= 10) {
+  if (cardPool === CARD_POOL && !pack.edition && !hasEpicPlus(cards) && pity + 1 >= 10) {
     const rar = Math.random() < 0.12 ? "lendaria" : "epica";
-    cards[2] = randomOfRarity(rar, !!pack.specialBoost);
+    const pityPool = pack.id === "base" ? CARD_POOL.filter((card) => !card.edition) : CARD_POOL;
+    cards[2] = randomOfRarityFromPool(rar, pityPool);
     cards = [...cards].sort((a, b) => RARITY_ORDER[a.rarity] - RARITY_ORDER[b.rarity]);
   }
   const resetPity = hasEpicPlus(cards);

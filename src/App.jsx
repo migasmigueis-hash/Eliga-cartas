@@ -135,6 +135,17 @@ const SPECIALS = [
   { id: "sp-loureiro-gf", name: "Loureiro", rarity: "epica", edition: "GRANDE FINAL", tag: "Voz da Grande Final", casterRef: "loureiro" },
 ];
 
+const BUILTIN_EDITIONS = [
+  { id: "finals-2526", name: "Finals 25/26", description: "Campeões nacionais das Finals 25/26", packId: "finals", edition: "FINALS 25/26" },
+  { id: "taca-2526", name: "Taça eLiga 25/26", description: "Campeão de Inverno da Taça eLiga", packId: "taca25", edition: "TAÇA eLIGA" },
+  { id: "etapa1-2526", name: "Etapa 1 · 25/26", description: "Vencedores da Etapa 1", packId: "etapa1-25", edition: "ETAPA 1" },
+  { id: "etapa2-2526", name: "Etapa 2 · 25/26", description: "Vencedores da Etapa 2", packId: "etapa2-25", edition: "ETAPA 2" },
+  { id: "etapa3-2526", name: "Etapa 3 · 25/26", description: "Vencedores da Etapa 3", packId: "etapa3-25", edition: "ETAPA 3" },
+  { id: "grande-final-2526", name: "Grande Final 25/26", description: "Equipa de transmissão da Grande Final", packId: "grande-final-25", edition: "GRANDE FINAL" },
+].map((batch) => ({ ...batch, status: "published", cards: SPECIALS.filter((card) => card.edition === batch.edition) }));
+
+const builtinEditionId = (edition) => BUILTIN_EDITIONS.find((batch) => batch.edition === edition)?.id || null;
+
 const RARITY = {
   comum: { label: "Comum", color: "#9FB0C8", glow: "rgba(159,176,200,0.35)", frame: "linear-gradient(160deg,#5d6b80,#9FB0C8 45%,#5d6b80)", ovr: [70, 77] },
   rara: { label: "Rara", color: "#F2C14E", glow: "rgba(242,193,78,0.55)", frame: "linear-gradient(160deg,#8a6420,#F2C14E 40%,#fff0c2 50%,#F2C14E 60%,#8a6420)", ovr: [78, 84] },
@@ -167,12 +178,12 @@ function buildPool() {
     const boost = s.rarity === "lendaria" ? 4 : 2;
     if (s.casterRef) {
       const base = CASTERS.find((c) => c.id === s.casterRef);
-      cards.push({ ...s, team: null, isClub: false, isCaster: true, role: base?.role || "CASTER", photo: base?.photo, ovr: Math.min(96, (base?.ovr || 84) + boost), j: null, v: null, g: null, mg: null });
+      cards.push({ ...s, batchId: builtinEditionId(s.edition), team: null, isClub: false, isCaster: true, role: base?.role || "CASTER", photo: base?.photo, ovr: Math.min(96, (base?.ovr || 84) + boost), j: null, v: null, g: null, mg: null });
       return;
     }
     const base = s.ref ? PLAYERS.find((p) => p.id === s.ref) : null;
     cards.push({
-      ...s, isClub: !!s.isClub, photo: base?.photo,
+      ...s, batchId: builtinEditionId(s.edition), isClub: !!s.isClub, photo: base?.photo,
       ovr: base ? Math.min(96, playerOvr(base) + boost) : 90,
       j: base?.j ?? null, v: base?.v ?? null, g: base?.g ?? null, mg: base?.mg ?? null,
     });
@@ -290,7 +301,12 @@ const REDEEM_CODES = {
 
 const PACKS = [
   { id: "base", name: "Pack Base", sub: "Época 25/26 · 3 cartas", desc: "Todos os clubes e jogadores da eLiga Portugal.", gradient: "linear-gradient(165deg,#0E2A4A 0%,#0A4D3C 60%,#1BF5A3 140%)", accent: "#1BF5A3", locked: false, specialBoost: 0, twitchCost: 50 },
-  { id: "finals", name: "Pack Finals 25/26", sub: "Edição comemorativa · 3 cartas", desc: "Probabilidade aumentada de cartas especiais das Finals, Taça e Etapas.", gradient: "linear-gradient(165deg,#1a0a3a 0%,#5a1e9e 55%,#F2C14E 150%)", accent: "#F2C14E", locked: false, specialBoost: 1, twitchCost: 150 },
+  { id: "finals", name: "Pack Finals 25/26", sub: "Edição Finals · 3 cartas", desc: "Contém apenas cartas da edição Finals 25/26.", gradient: "linear-gradient(165deg,#1a0a3a 0%,#5a1e9e 55%,#F2C14E 150%)", accent: "#F2C14E", locked: false, specialBoost: 1, twitchCost: 150 },
+  { id: "taca25", name: "Pack Taça eLiga 25/26", sub: "Edição Taça · 3 cartas", desc: "Contém apenas cartas da edição Taça eLiga 25/26.", gradient: "linear-gradient(165deg,#271023,#73385f)", accent: "#ff8fd8", locked: false, specialBoost: 1, twitchCost: 150 },
+  { id: "etapa1-25", name: "Pack Etapa 1 · 25/26", sub: "Edição Etapa 1 · 3 cartas", desc: "Vencedores da Etapa 1 da época 25/26.", gradient: "linear-gradient(165deg,#10243f,#21629a)", accent: "#39E6FF", locked: false, specialBoost: 1, twitchCost: 150 },
+  { id: "etapa2-25", name: "Pack Etapa 2 · 25/26", sub: "Edição Etapa 2 · 3 cartas", desc: "Vencedores da Etapa 2 da época 25/26.", gradient: "linear-gradient(165deg,#102e24,#27845f)", accent: "#1BF5A3", locked: false, specialBoost: 1, twitchCost: 150 },
+  { id: "etapa3-25", name: "Pack Etapa 3 · 25/26", sub: "Edição Etapa 3 · 3 cartas", desc: "Vencedores da Etapa 3 da época 25/26.", gradient: "linear-gradient(165deg,#251833,#794aa8)", accent: "#B45CFF", locked: false, specialBoost: 1, twitchCost: 150 },
+  { id: "grande-final-25", name: "Pack Grande Final 25/26", sub: "Edição Grande Final · 3 cartas", desc: "Casters da Grande Final da época 25/26.", gradient: "linear-gradient(165deg,#2b230d,#9d7723)", accent: "#F2C14E", locked: false, specialBoost: 1, twitchCost: 150 },
   { id: "etapa1", name: "Pack Etapa 1 · 26/27", sub: "Cartas únicas da Etapa 1", desc: "Disponível com o arranque da nova época, em fevereiro de 2027.", gradient: "linear-gradient(165deg,#10243f,#1f3a5f)", accent: "#6f87a8", locked: true, lockLabel: "Fevereiro 2027" },
   { id: "taca", name: "Pack Taça eLiga 26/27", sub: "Cartas únicas da Taça", desc: "Disponível durante a Taça eLiga Portugal.", gradient: "linear-gradient(165deg,#241027,#3f1f3a)", accent: "#a86f9d", locked: true, lockLabel: "Brevemente" },
 ];
@@ -838,7 +854,7 @@ const studioSourceCard = (card) => {
   };
 };
 
-function AdminCardStudio({ initialBatches, initialBaseOverrides, baseCards, cardImages, saving, imageBusy, onSave, onSaveBase, onUploadImage, onRemoveImage }) {
+function AdminCardStudio({ initialBatches, initialBaseOverrides, baseCards, builtInBatches, cardImages, saving, imageBusy, onSave, onSaveBase, onUploadImage, onRemoveImage }) {
   const makeBatch = () => {
     const id = `edition-${Date.now()}`;
     const name = "Nova edição";
@@ -847,8 +863,13 @@ function AdminCardStudio({ initialBatches, initialBaseOverrides, baseCards, card
   const [batches, setBatches] = useState(() => initialBatches || []);
   const [baseOverrides, setBaseOverrides] = useState(() => initialBaseOverrides || {});
   const [batchIndex, setBatchIndex] = useState(-1);
+  const [catalogBatchId, setCatalogBatchId] = useState("base");
   const [cardIndex, setCardIndex] = useState(0);
-  const baseBatch = { id: "base", name: "Cartas base", description: "Catálogo original da eLiga Portugal", status: "builtin", cards: baseCards.map((item) => studioSourceCard({ ...item, ...(baseOverrides[item.id] || {}), id: item.id, edition: null })) };
+  const catalogBatches = [
+    { id: "base", name: "Cartas base", description: "Catálogo original da eLiga Portugal", cards: baseCards.filter((item) => !item.batchId) },
+    ...builtInBatches.map((item) => ({ ...item, cards: baseCards.filter((card) => card.batchId === item.id) })),
+  ].map((item) => ({ ...item, status: "builtin", cards: item.cards.map((card) => studioSourceCard({ ...card, ...(baseOverrides[card.id] || {}), id: card.id })) }));
+  const baseBatch = catalogBatches.find((item) => item.id === catalogBatchId) || catalogBatches[0];
   const isBaseEdition = batchIndex === -1;
   const batch = isBaseEdition ? baseBatch : batches[batchIndex];
   const card = batch?.cards?.[cardIndex] || batch?.cards?.[0];
@@ -892,7 +913,12 @@ function AdminCardStudio({ initialBatches, initialBaseOverrides, baseCards, card
     setBatchIndex(batches.length);
     setCardIndex(0);
   };
-  const selectBatch = (value) => { setBatchIndex(value === "base" ? -1 : batches.findIndex((item) => item.id === value)); setCardIndex(0); };
+  const selectBatch = (value) => {
+    const isCatalog = catalogBatches.some((item) => item.id === value);
+    setCatalogBatchId(isCatalog ? value : "base");
+    setBatchIndex(isCatalog ? -1 : batches.findIndex((item) => item.id === value));
+    setCardIndex(0);
+  };
   const renameBatch = (name) => updateBatch({ name, cards: batch.cards.map((item) => ({ ...item, edition: name })) });
   const changeCardEdition = (targetId) => {
     const targetIndex = batches.findIndex((item) => item.id === targetId);
@@ -915,8 +941,8 @@ function AdminCardStudio({ initialBatches, initialBaseOverrides, baseCards, card
     <section className="card-studio">
       <aside className="studio-sidebar">
         <div className="studio-eyebrow">EDIÇÃO</div>
-        <select className="studio-edition-select" value={isBaseEdition ? "base" : batch.id} onChange={(e) => selectBatch(e.target.value)} aria-label="Selecionar edição">
-          <option value="base">Cartas base · {baseBatch.cards.length}</option>
+        <select className="studio-edition-select" value={batch.id} onChange={(e) => selectBatch(e.target.value)} aria-label="Selecionar edição">
+          {catalogBatches.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.cards.length}</option>)}
           {batches.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.cards.length} · {item.status === "published" ? "Publicada" : "Draft"}</option>)}
         </select>
         <button className="studio-secondary" onClick={addBatch}>+ Nova edição</button>
@@ -955,7 +981,7 @@ function AdminCardStudio({ initialBatches, initialBaseOverrides, baseCards, card
               <label><span style={fieldLabel}>NOME</span><input style={inputStyle} value={card.name} onChange={(e) => updateCard({ name: e.target.value })} /></label>
               <label><span style={fieldLabel}>TIPO</span><select style={inputStyle} value={card.isClub ? "club" : card.isCaster ? "caster" : "player"} onChange={(e) => updateCard({ isClub: e.target.value === "club", isCaster: e.target.value === "caster" })}><option value="player">Jogador</option><option value="club">Clube</option><option value="caster">Caster</option></select></label>
               <label><span style={fieldLabel}>CLUBE</span><select style={inputStyle} value={card.team || ""} onChange={(e) => updateCard({ team: e.target.value || null })}><option value="">Sem clube</option>{TEAMS.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label>
-              <label><span style={fieldLabel}>EDIÇÃO</span><select style={inputStyle} value={isBaseEdition ? "base" : batch.id} onChange={(e) => changeCardEdition(e.target.value)}><option value="base" disabled>Cartas base</option>{batches.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+              <label><span style={fieldLabel}>EDIÇÃO</span><select style={inputStyle} value={batch.id} onChange={(e) => changeCardEdition(e.target.value)}>{catalogBatches.map((item) => <option key={item.id} value={item.id} disabled>{item.name}</option>)}{batches.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
             </div>
 
             <div className="studio-section-title"><span>02</span> Visual</div>
@@ -1432,9 +1458,8 @@ function App() {
   const [ligaConfig, setLigaConfig] = useState(null); // config da liga (modo, etapa, fase, grupo)
   CARD_IMAGE_OVERRIDES = ligaConfig?.cardImages || {};
   const runtimeBaseCards = BASE_POOL.map((card) => {
-    if (card.edition) return card;
     const override = ligaConfig?.baseCardOverrides?.[card.id] || {};
-    return { ...card, ...override, id: card.id, edition: null, teamData: TEAMS.find((team) => team.id === (override.team ?? card.team)) };
+    return { ...card, ...override, id: card.id, edition: card.edition, batchId: card.batchId, teamData: TEAMS.find((team) => team.id === (override.team ?? card.team)) };
   });
   const publishedBatch = ligaConfig?.customBatches?.find((batch) => batch.status === "published");
   const publishedCards = publishedBatch?.cards?.map((card) => ({ ...card, teamData: TEAMS.find((team) => team.id === card.team) })) || [];
@@ -2353,7 +2378,7 @@ function App() {
 
   const ownedCount = POOL.filter((card) => collection[card.id] > 0).length;
   const publishedBatches = (ligaConfig?.customBatches || []).filter((batch) => batch.status === "published");
-  const customBatchCardIds = new Set(publishedBatches.flatMap((batch) => batch.cards.map((card) => card.id)));
+  const allPublishedBatches = [...BUILTIN_EDITIONS, ...publishedBatches];
   const filtered = useMemo(() => {
     let list = POOL;
     if (filter === "jogadores") list = list.filter((c) => !c.isClub && !c.isCaster && !c.edition);
@@ -2361,9 +2386,9 @@ function App() {
     if (filter === "casters") list = list.filter((c) => c.isCaster && !c.edition);
     if (filter === "especiais") list = list.filter((c) => c.edition);
     if (clubFilter !== "todos") list = list.filter((c) => (clubFilter === "casters" ? c.isCaster : c.team === clubFilter));
-    if (batchFilter === "base") list = list.filter((c) => !customBatchCardIds.has(c.id));
+    if (batchFilter === "base") list = list.filter((c) => !c.edition);
     if (batchFilter !== "todos" && batchFilter !== "base") {
-      const batch = publishedBatches.find((item) => item.id === batchFilter);
+      const batch = allPublishedBatches.find((item) => item.id === batchFilter);
       const cardIds = new Set(batch?.cards.map((card) => card.id) || []);
       list = list.filter((c) => cardIds.has(c.id));
     }
@@ -2399,7 +2424,7 @@ function App() {
         style={{ fontFamily: FONT, fontSize: 12, padding: "8px 4px", cursor: "pointer", border: "none", background: "transparent", color: value !== "todos" ? "#1BF5A3" : "#9FB0C8", maxWidth: 210, outline: "none" }}>
         <option value="todos">Todos os batches</option>
         <option value="base">Coleção base · 25/26</option>
-        {publishedBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.name} · {batch.cards.length}</option>)}
+        {allPublishedBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.name} · {batch.cards.length}</option>)}
       </select>
     </span>
   );
@@ -3864,7 +3889,8 @@ function App() {
               <AdminCardStudio
                 initialBatches={ligaConfig?.customBatches || []}
                 initialBaseOverrides={ligaConfig?.baseCardOverrides || {}}
-                baseCards={runtimeBaseCards.filter((card) => !card.edition)}
+                baseCards={runtimeBaseCards}
+                builtInBatches={BUILTIN_EDITIONS}
                 cardImages={ligaConfig?.cardImages || {}}
                 saving={adminConfigSaving}
                 imageBusy={adminImageBusy}
