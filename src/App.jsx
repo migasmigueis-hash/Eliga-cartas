@@ -1766,6 +1766,7 @@ function App() {
   const tutorialReplay = useRef(false);
   const tutorialPanelRef = useRef(null);
   const tutorialReturnFocus = useRef(null);
+  const compResultPanelRef = useRef(null);
 
   useEffect(() => {
     if (!zoom) return undefined;
@@ -1773,6 +1774,18 @@ function App() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [zoom]);
+
+  useEffect(() => {
+    if (!compResult || !compResultPanelRef.current) return undefined;
+    const returnFocus = document.activeElement;
+    compResultPanelRef.current.focus();
+    const closeOnEscape = (event) => { if (event.key === "Escape") setCompResult(null); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      returnFocus?.focus?.();
+    };
+  }, [compResult]);
 
   // sessão Supabase Auth + bump global das Escolhas
   useEffect(() => {
@@ -4005,9 +4018,10 @@ function App() {
 
       {compResult && (
         <div style={{ position: "fixed", inset: 0, zIndex: 56, background: "rgba(3,6,12,0.93)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setCompResult(null)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ width: 620, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", background: "#0E162E", border: "1px solid #1BF5A344", borderRadius: 18, padding: 24, animation: "pop 320ms ease-out" }}>
+          <div ref={compResultPanelRef} role="dialog" aria-modal="true" aria-labelledby="competition-result-title" tabIndex={-1} onClick={(e) => e.stopPropagation()} style={{ position: "relative", width: 620, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", background: "#0E162E", border: "1px solid #1BF5A344", borderRadius: 18, padding: 24, animation: "pop 320ms ease-out" }}>
+            <button type="button" onClick={() => setCompResult(null)} aria-label="Fechar resultado" style={{ position: "absolute", top: 12, right: 12, width: 36, height: 36, border: "1px solid #ffffff22", borderRadius: 8, background: "#0A1126", color: "#fff", fontSize: 22, lineHeight: 1, cursor: "pointer" }}>×</button>
             {compResult.evaluatedNotice && <div style={{ textAlign: "center", fontFamily: FONT, fontWeight: 700, fontSize: 11, letterSpacing: 2, color: "#F2C14E", marginBottom: 7 }}>JORNADA AVALIADA · NOVOS PONTOS</div>}
-            <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff", textAlign: "center" }}>{compResult.label || `Resultado da jornada ${compResult.j}`}</div>
+            <div id="competition-result-title" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff", textAlign: "center", padding: "0 36px" }}>{compResult.label || `Resultado da jornada ${compResult.j}`}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, margin: "20px 0" }}>
               {compResult.rows.map((r, i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, background: "#0A1126", borderRadius: 12, padding: "12px 14px" }}>
