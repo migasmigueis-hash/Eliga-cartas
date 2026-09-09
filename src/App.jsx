@@ -483,35 +483,66 @@ const SCORING = {
 
 /* ---------- som (sintetizado, sem ficheiros) e háptica ---------- */
 let _audioCtx = null;
+let _audioMaster = null;
 function playFx(kind, muted) {
   if (muted) return;
   try {
+    if (!_audioCtx && navigator.userActivation && !navigator.userActivation.isActive) return;
     _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     const ctx = _audioCtx;
     if (ctx.state === "suspended") ctx.resume();
     const now = ctx.currentTime;
-    const tone = (f, t0, dur, type = "triangle", vol = 0.16) => {
+    if (!_audioMaster) {
+      const master = ctx.createGain(), compressor = ctx.createDynamicsCompressor();
+      master.gain.value = 0.72;
+      compressor.threshold.value = -18;
+      compressor.knee.value = 16;
+      compressor.ratio.value = 5;
+      master.connect(compressor); compressor.connect(ctx.destination);
+      _audioMaster = master;
+    }
+    const master = _audioMaster;
+    const tone = (f, t0, dur, type = "triangle", vol = 0.16, endFrequency = null) => {
       const o = ctx.createOscillator(), g = ctx.createGain();
       o.type = type; o.frequency.value = f;
-      g.gain.setValueAtTime(vol, now + t0);
+      if (endFrequency) o.frequency.exponentialRampToValueAtTime(endFrequency, now + t0 + dur);
+      g.gain.setValueAtTime(0.001, now + t0);
+      g.gain.exponentialRampToValueAtTime(vol, now + t0 + Math.min(0.025, dur / 3));
       g.gain.exponentialRampToValueAtTime(0.001, now + t0 + dur);
-      o.connect(g); g.connect(ctx.destination);
+      o.connect(g); g.connect(master);
+      o.onended = () => { o.disconnect(); g.disconnect(); };
       o.start(now + t0); o.stop(now + t0 + dur);
     };
-    if (kind === "tear") {
-      const len = 0.22, buf = ctx.createBuffer(1, ctx.sampleRate * len, ctx.sampleRate), d = buf.getChannelData(0);
-      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) * 0.6;
-      const s = ctx.createBufferSource(); s.buffer = buf;
-      // filtro passa-baixo: tira o "chiado" agudo, fica mais um rasgar de papel surdo
-      const filter = ctx.createBiquadFilter(); filter.type = "lowpass"; filter.frequency.value = 1500; filter.Q.value = 0.6;
-      const g = ctx.createGain(); g.gain.value = 0.16;
-      s.connect(filter); filter.connect(g); g.connect(ctx.destination); s.start();
+    const noise = (t0, dur, vol, filterType = "bandpass", frequency = 1200) => {
+      const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * dur), ctx.sampleRate), data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+      const source = ctx.createBufferSource(), filter = ctx.createBiquadFilter(), gain = ctx.createGain();
+      source.buffer = buf; filter.type = filterType; filter.frequency.value = frequency; filter.Q.value = 0.7;
+      gain.gain.setValueAtTime(vol, now + t0); gain.gain.exponentialRampToValueAtTime(0.001, now + t0 + dur);
+      source.connect(filter); filter.connect(gain); gain.connect(master);
+      source.onended = () => { source.disconnect(); filter.disconnect(); gain.disconnect(); };
+      source.start(now + t0); source.stop(now + t0 + dur);
+    };
+    if (kind === "tap") tone(680, 0, 0.045, "sine", 0.035, 560);
+    if (kind === "pack") {
+      tone(110, 0, 0.38, "sine", 0.11, 82);
+      tone(660, 0.1, 0.22, "sine", 0.06, 880);
+      tone(990, 0.22, 0.34, "triangle", 0.05, 1320);
     }
-    if (kind === "flip") tone(520, 0, 0.07, "sine", 0.1);
-    if (kind === "comum") tone(440, 0, 0.14, "sine", 0.1);
-    if (kind === "rara") { tone(523, 0, 0.14); tone(659, 0.09, 0.22); }
-    if (kind === "epica") { tone(523, 0, 0.12); tone(659, 0.09, 0.12); tone(784, 0.18, 0.32, "triangle", 0.2); }
-    if (kind === "lendaria") { [523, 659, 784, 1047].forEach((f, i) => tone(f, i * 0.09, 0.36, "triangle", 0.2)); tone(1319, 0.42, 0.55, "sine", 0.16); }
+    if (kind === "tearTick") { noise(0, 0.055, 0.045, "highpass", 900); tone(150, 0, 0.04, "sine", 0.025, 120); }
+    if (kind === "tear") {
+      noise(0, 0.28, 0.2, "lowpass", 1800);
+      tone(130, 0.08, 0.3, "sine", 0.12, 70);
+    }
+    if (kind === "flip") { noise(0, 0.1, 0.045, "highpass", 1800); tone(420, 0, 0.09, "sine", 0.07, 760); }
+    if (kind === "ready") { tone(330, 0, 0.12, "sine", 0.06, 440); tone(660, 0.1, 0.3, "triangle", 0.09, 880); }
+    if (kind === "comum") { tone(392, 0, 0.15, "sine", 0.09); tone(523, 0.08, 0.2, "sine", 0.07); }
+    if (kind === "rara") { tone(523, 0, 0.16); tone(659, 0.08, 0.24); tone(880, 0.18, 0.3, "sine", 0.08); }
+    if (kind === "epica") { tone(392, 0, 0.16); tone(523, 0.08, 0.18); tone(659, 0.16, 0.22); tone(988, 0.27, 0.5, "triangle", 0.18); }
+    if (kind === "lendaria") { tone(65, 0, 0.6, "sine", 0.16, 48); [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.12 + i * 0.09, 0.5, "triangle", 0.18)); tone(1568, 0.58, 0.75, "sine", 0.13); }
+    if (kind === "summary") { [523, 659, 784].forEach((f, i) => tone(f, i * 0.07, 0.38, "sine", 0.08)); }
+    if (kind === "success") { tone(440, 0, 0.12, "sine", 0.06); tone(660, 0.08, 0.24, "sine", 0.08); }
+    if (kind === "error") { tone(190, 0, 0.14, "sine", 0.08, 145); tone(145, 0.13, 0.18, "triangle", 0.06, 110); }
   } catch (e) { /* sem áudio disponível */ }
 }
 function buzz(pattern) { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) { /* sem háptica */ } }
@@ -1230,11 +1261,19 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
   const [phase, setPhase] = useState(initialPhase);
   const [idx, setIdx] = useState(0);
   const [flipped, setFlipped] = useState(false);
+  const [revealing, setRevealing] = useState(false);
   const [fx, setFx] = useState(null);
   const [busy, setBusy] = useState(false);
   const [tearProg, setTearProg] = useState(0);
   const tearing = useRef(false);
   const dragRef = useRef(null);
+  const tearSoundStep = useRef(0);
+  const phaseTimer = useRef(null);
+  const revealTimer = useRef(null);
+  useEffect(() => {
+    playFx(initialPhase === "pack" ? "pack" : "ready", muted);
+    return () => { clearTimeout(phaseTimer.current); clearTimeout(revealTimer.current); };
+  }, []);
   const onTearDown = (e) => {
     if (phase !== "pack") return;
     tearing.current = true;
@@ -1244,15 +1283,21 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
     if (!tearing.current || phase !== "pack" || !dragRef.current) return;
     const b = dragRef.current.getBoundingClientRect();
     const p = Math.min(1, Math.max(0, (e.clientX - b.left) / b.width));
+    const soundStep = Math.min(3, Math.floor(p * 4));
+    if (soundStep > tearSoundStep.current) { tearSoundStep.current = soundStep; playFx("tearTick", muted); }
     setTearProg((prev) => {
       const np = Math.max(prev, p);
       if (np >= 0.92 && prev < 0.92) { tearing.current = false; tear(); }
       return np;
     });
   };
-  const onTearUp = () => {
+  const onTearUp = (e) => {
     tearing.current = false;
-    if (phase === "pack") setTearProg((p) => (p >= 0.92 ? p : 0));
+    try { if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); } catch (er) { /* ok */ }
+    if (phase === "pack") setTearProg((p) => {
+      if (p < 0.92) tearSoundStep.current = 0;
+      return p >= 0.92 ? p : 0;
+    });
   };
   const share = async (c, e) => {
     if (e) e.stopPropagation();
@@ -1261,18 +1306,27 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
   };
   const current = cards[idx];
 
-  const tear = () => { playFx("tear", muted); buzz(25); setPhase("torn"); setTimeout(() => setPhase("reveal"), 1000); };
+  const tear = () => {
+    playFx("tear", muted); buzz(25); setPhase("torn");
+    phaseTimer.current = setTimeout(() => { setPhase("reveal"); playFx("ready", muted); }, 900);
+  };
   const flip = () => {
+    if (revealing) return;
     if (flipped) {
       playFx("flip", muted);
       setFlipped(false); setFx(null);
-      if (idx + 1 >= cards.length) setPhase("summary");
+      if (idx + 1 >= cards.length) { setPhase("summary"); playFx("summary", muted); }
       else setIdx(idx + 1);
     } else {
-      setFlipped(true); setFx(current.rarity);
-      playFx(current.rarity, muted);
-      if (current.rarity === "epica") buzz(45);
-      if (current.rarity === "lendaria") buzz([60, 40, 90]);
+      setRevealing(true); playFx("flip", muted);
+      const delay = current.rarity === "lendaria" ? 520 : current.rarity === "epica" ? 400 : 260;
+      clearTimeout(revealTimer.current);
+      revealTimer.current = setTimeout(() => {
+        setFlipped(true); setFx(current.rarity); setRevealing(false);
+        playFx(current.rarity, muted);
+        if (current.rarity === "epica") buzz(45);
+        if (current.rarity === "lendaria") buzz([60, 40, 90]);
+      }, delay);
     }
   };
 
@@ -1332,14 +1386,19 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
           )}
         </div>
       ) : phase === "reveal" ? (
-        <div onClick={flip} style={{ cursor: "pointer", textAlign: "center" }}>
+        <div onClick={flip} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); flip(); } }} role="button" tabIndex={0} aria-label={flipped ? `Continuar depois de revelar ${current.name}` : `Revelar carta ${idx + 1} de ${cards.length}`} style={{ cursor: revealing ? "wait" : "pointer", textAlign: "center" }}>
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, marginBottom: 12 }} aria-label={`Carta ${idx + 1} de ${cards.length}`}>
+            {cards.map((_, cardIndex) => <span key={cardIndex} style={{ width: cardIndex === idx ? 24 : 8, height: 8, borderRadius: 99, background: cardIndex < idx ? "#1BF5A3" : cardIndex === idx ? pack.accent : "#22304d", boxShadow: cardIndex === idx ? `0 0 12px ${pack.accent}` : "none", transition: "all 240ms ease" }} />)}
+          </div>
           <div style={{ height: 30, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 6 }}>
             {flipped && isNew(idx) && (
               <div style={{ background: "#1BF5A3", color: "#04140c", fontFamily: FONT, fontWeight: 700, fontSize: 11, letterSpacing: 1.5, padding: "4px 16px", borderRadius: 99, boxShadow: "0 0 18px rgba(27,245,163,0.75)", whiteSpace: "nowrap", animation: "pop 300ms ease-out" }}>NOVA</div>
             )}
+            {revealing && <div style={{ fontFamily: FONT, color: "#9FB0C8", fontSize: 10, letterSpacing: 3, animation: "pulse 700ms ease-in-out infinite" }}>A REVELAR…</div>}
           </div>
           <div style={{ perspective: 1100, animation: "pop 420ms ease-out" }} key={idx}>
-            <div style={{ position: "relative", width: 260, height: 260 * 1.42, margin: "0 auto", transformStyle: "preserve-3d", transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)", transition: "transform 600ms cubic-bezier(.2,.7,.3,1.1)" }}>
+            <div style={{ position: "relative", width: 260, height: 260 * 1.42, margin: "0 auto", transformStyle: "preserve-3d", transform: flipped ? "rotateY(180deg)" : revealing ? "translateY(-8px) scale(1.025)" : "rotateY(0deg)", transition: "transform 600ms cubic-bezier(.2,.7,.3,1.1)", filter: revealing ? `drop-shadow(0 0 28px ${pack.accent}55)` : "none" }}>
+              {!flipped && cards.slice(idx + 1).map((_, stackIndex) => <div key={stackIndex} style={{ position: "absolute", inset: 0, transform: `translate(${Math.min(stackIndex + 1, 2) * 5}px, ${Math.min(stackIndex + 1, 2) * 5}px)`, borderRadius: 12, background: "#101B33", border: "1px solid #22304d", zIndex: -stackIndex - 1 }} />)}
               <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden" }}><CardBack width={260} /></div>
               <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}><Card card={current} width={260} showcase={flipped} /></div>
             </div>
@@ -1352,13 +1411,20 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
                 <div style={{ fontSize: 11, color: "#6f87a8", marginTop: 8 }}>toca para continuar · {idx + 1}/{cards.length}</div>
               </>
             ) : (
-              <div style={{ fontSize: 12, color: "#6f87a8", letterSpacing: 2 }}>TOCA PARA REVELAR · {idx + 1}/{cards.length}</div>
+              <div style={{ fontSize: 12, color: revealing ? pack.accent : "#6f87a8", letterSpacing: 2 }}>{revealing ? "PREPARA-TE" : `TOCA PARA REVELAR · ${idx + 1}/${cards.length}`}</div>
             )}
           </div>
         </div>
       ) : (
         <div style={{ textAlign: "center", animation: "pop 400ms ease-out", padding: 16 }}>
           <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 22, color: "#fff", marginBottom: 18 }}>{cards.length > 1 ? "Cartas obtidas" : "Carta obtida"}</div>
+          <div style={{ display: "flex", justifyContent: "center", gap: 8, margin: "-8px 0 22px", flexWrap: "wrap" }}>
+            {cards.filter((_, cardIndex) => isNew(cardIndex)).length > 0 && <span style={{ padding: "4px 10px", borderRadius: 99, background: "#1BF5A318", color: "#1BF5A3", fontFamily: FONT, fontSize: 10 }}>{cards.filter((_, cardIndex) => isNew(cardIndex)).length} NOVA{cards.filter((_, cardIndex) => isNew(cardIndex)).length > 1 ? "S" : ""}</span>}
+            {["lendaria", "epica", "rara", "comum"].map((rarity) => {
+              const count = cards.filter((card) => card.rarity === rarity).length;
+              return count > 0 ? <span key={rarity} style={{ padding: "4px 10px", borderRadius: 99, background: `${RARITY[rarity].color}18`, color: RARITY[rarity].color, fontFamily: FONT, fontSize: 10 }}>{count} {RARITY[rarity].label.toUpperCase()}</span> : null;
+            })}
+          </div>
           <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
             {cards.map((c, i) => (
               <div key={i} style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
@@ -1941,6 +2007,7 @@ function App() {
 
   const openPack = async (pack, claim, extra) => {
     if (pack.locked) return false;
+    playFx("tap", muted);
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
     const { data, message } = await invokeFn("open-pack", { packId: pack.id, ...(claim ? { claim } : {}), ...(extra || {}) }, "Não foi possível abrir o pack. Tenta novamente.");
     if (message) {
@@ -2244,11 +2311,16 @@ function App() {
     setTimeout(() => returnTarget?.focus(), 0);
   };
   const openTutorial = () => {
+    playFx("tap", muted);
     tutorialReturnFocus.current = document.activeElement;
     tutorialReplay.current = true;
     setOnboardStep(0);
   };
-  const leaveTutorialFor = (nextTab) => { finishOnboard(); setTab(nextTab); };
+  const navigateToTab = (nextTab) => {
+    if (nextTab !== tab) playFx("tap", muted);
+    setTab(nextTab);
+  };
+  const leaveTutorialFor = (nextTab) => { finishOnboard(); navigateToTab(nextTab); };
   useEffect(() => {
     if (onboardStep === null || !tutorialPanelRef.current) return undefined;
     const panel = tutorialPanelRef.current;
@@ -2270,7 +2342,10 @@ function App() {
     document.addEventListener("keydown", handleTutorialKeys);
     return () => document.removeEventListener("keydown", handleTutorialKeys);
   }, [onboardStep === null]);
-  const toggleMute = () => setMuted((m) => !m);
+  const toggleMute = () => {
+    if (muted) playFx("ready", false);
+    setMuted((currentMuted) => !currentMuted);
+  };
   const directTradeGo = async (rarity, target) => {
     setDirectTrade(null);
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
@@ -2665,6 +2740,11 @@ function App() {
   // ---- indicadores e ferramentas de admin ----
   const tradeReady = ["comum", "rara", "epica"].some((r) => duplicatesOf(r) >= TRADE_COST);
   const [toast, setToast] = useState(null);
+  useEffect(() => {
+    if (!toast) return;
+    if (/^(✓|\+)|sucesso|guardad|copiado/i.test(toast)) playFx("success", muted);
+    else if (/não |erro|inválid|incorret|terminou|insuficient|já (?:usaste|fizeste|estás)/i.test(toast)) playFx("error", muted);
+  }, [toast]);
   const openAdminPack = () => {
     addCards(POOL);
     setToast(`Pack Admin: ${POOL.length} cartas adicionadas (1 de cada)`);
@@ -2788,7 +2868,7 @@ function App() {
             { k: "perfil", label: "Perfil" },
             ...(isAdmin ? [{ k: "admin", label: "⚙ Admin" }] : []),
           ].map(({ k, label, dot }) => (
-            <button key={k} onClick={() => setTab(k)} style={{ position: "relative", fontFamily: FONT, fontWeight: 600, fontSize: 13, letterSpacing: 1, padding: "8px 13px", borderRadius: 8, cursor: "pointer", border: "none", whiteSpace: "nowrap", flexShrink: 0, background: tab === k ? "#1BF5A3" : "transparent", color: tab === k ? "#04140c" : "#9FB0C8" }}>
+            <button key={k} onClick={() => navigateToTab(k)} style={{ position: "relative", fontFamily: FONT, fontWeight: 600, fontSize: 13, letterSpacing: 1, padding: "8px 13px", borderRadius: 8, cursor: "pointer", border: "none", whiteSpace: "nowrap", flexShrink: 0, background: tab === k ? "#1BF5A3" : "transparent", color: tab === k ? "#04140c" : "#9FB0C8" }}>
               {label}
               {dot && <span style={{ position: "absolute", top: 4, right: 5, width: 8, height: 8, borderRadius: "50%", background: "#ff4757", boxShadow: "0 0 7px #ff4757", border: "1.5px solid #060A16" }} />}
             </button>
@@ -2802,14 +2882,14 @@ function App() {
               <span style={{ color: "#6f87a8", fontSize: 11 }}>pts Twitch</span>
             </div>
           ) : (
-            <button onClick={() => setTab("perfil")} style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: FONT, fontWeight: 600, fontSize: 12, letterSpacing: 0.5, color: "#fff", background: "#9146FF22", border: "1px solid #9146FF66", borderRadius: 99, padding: "6px 12px", cursor: "pointer", whiteSpace: "nowrap" }}>
+            <button onClick={() => navigateToTab("perfil")} style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: FONT, fontWeight: 600, fontSize: 12, letterSpacing: 0.5, color: "#fff", background: "#9146FF22", border: "1px solid #9146FF66", borderRadius: 99, padding: "6px 12px", cursor: "pointer", whiteSpace: "nowrap" }}>
               🟣 Liga a tua Twitch
             </button>
           )}
           <div style={{ display: "flex", alignItems: "center", gap: 8, borderLeft: "1px solid #22304d", paddingLeft: 14 }}>
             <button onClick={openTutorial} aria-label="Abrir tutorial" title="Tutorial" style={{ width: 30, height: 30, display: "grid", placeItems: "center", fontFamily: FONT, fontWeight: 700, fontSize: 14, borderRadius: "50%", cursor: "pointer", color: "#39E6FF", background: "#39E6FF12", border: "1px solid #39E6FF55" }}>?</button>
             <button onClick={toggleMute} aria-label={muted ? "Ativar som" : "Silenciar som"} style={{ fontSize: 15, padding: "4px 8px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d" }}>{muted ? "🔇" : "🔊"}</button>
-            <button onClick={() => setTab("perfil")} aria-label="Abrir Perfil" title="Perfil" style={{ fontFamily: FONT, fontSize: 12, color: tab === "perfil" ? "#1BF5A3" : "#9FB0C8", padding: 0, cursor: "pointer", background: "transparent", border: "none" }}>{username}</button>
+            <button onClick={() => navigateToTab("perfil")} aria-label="Abrir Perfil" title="Perfil" style={{ fontFamily: FONT, fontSize: 12, color: tab === "perfil" ? "#1BF5A3" : "#9FB0C8", padding: 0, cursor: "pointer", background: "transparent", border: "none" }}>{username}</button>
             <button onClick={logout} style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1, padding: "5px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d", color: "#8fa3bd" }}>Sair</button>
           </div>
         </div>
