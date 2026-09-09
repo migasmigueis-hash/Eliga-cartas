@@ -1305,10 +1305,11 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
     setBusy(true); await onShare(c); setBusy(false);
   };
   const current = cards[idx];
+  const motionReduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
   const tear = () => {
     playFx("tear", muted); buzz(25); setPhase("torn");
-    phaseTimer.current = setTimeout(() => { setPhase("reveal"); playFx("ready", muted); }, 900);
+    phaseTimer.current = setTimeout(() => { setPhase("reveal"); playFx("ready", muted); }, motionReduced ? 0 : 900);
   };
   const flip = () => {
     if (revealing) return;
@@ -1319,7 +1320,7 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
       else setIdx(idx + 1);
     } else {
       setRevealing(true); playFx("flip", muted);
-      const delay = current.rarity === "lendaria" ? 520 : current.rarity === "epica" ? 400 : 260;
+      const delay = motionReduced ? 0 : current.rarity === "lendaria" ? 520 : current.rarity === "epica" ? 400 : 260;
       clearTimeout(revealTimer.current);
       revealTimer.current = setTimeout(() => {
         setFlipped(true); setFx(current.rarity); setRevealing(false);
@@ -1345,11 +1346,17 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
       ))}
 
       {phase === "pack" || phase === "torn" ? (
-        <div style={{ textAlign: "center", animation: phase === "pack" && tearProg === 0 ? "float 2.8s ease-in-out infinite" : "none" }}>
-          <div ref={dragRef} onPointerDown={onTearDown} onPointerMove={onTearMove} onPointerUp={onTearUp} onPointerCancel={onTearUp}
-            style={{ width: 250, height: 360, position: "relative", margin: "0 auto", filter: "drop-shadow(0 26px 50px rgba(0,0,0,0.6))", animation: phase === "torn" ? "packAway 620ms ease-in 320ms forwards" : "none", touchAction: "none", cursor: phase === "pack" ? "grab" : "default" }}>
+        <div style={{ textAlign: "center", animation: phase === "pack" && tearProg === 0 ? "float 2.8s ease-in-out infinite" : "none", position: "relative" }}>
+          <div style={{ width: 250, height: 360, margin: "0 auto", animation: phase === "pack" ? "packEnter 520ms cubic-bezier(.2,.8,.25,1) both" : "none" }}>
+          <div ref={dragRef} onPointerDown={onTearDown} onPointerMove={onTearMove} onPointerUp={onTearUp} onPointerCancel={onTearUp} onKeyDown={(event) => { if (phase === "pack" && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); tear(); } }} role="button" tabIndex={phase === "pack" ? 0 : -1} aria-label="Abrir pack: arrasta da esquerda para a direita ou prime Enter"
+            style={{ width: 250, height: 360, position: "relative", filter: "drop-shadow(0 26px 50px rgba(0,0,0,0.6))", transform: phase === "pack" && tearProg > 0 ? `rotate(${(tearProg - 0.5) * 2.4}deg) scale(${1 + tearProg * 0.012}, ${1 - tearProg * 0.008})` : undefined, animation: phase === "torn" ? "packAway 600ms ease-in 250ms forwards" : "none", touchAction: "none", cursor: phase === "pack" ? "grab" : "default", transition: phase === "pack" ? "transform 45ms linear" : "none" }}>
+            {phase === "torn" && (
+              <div aria-hidden="true" style={{ position: "absolute", left: 20, right: 20, top: 20, height: 290, zIndex: 0, animation: "cardsEmerge 760ms cubic-bezier(.16,.8,.25,1) forwards", pointerEvents: "none" }}>
+                {[2, 1, 0].map((cardIndex) => <div key={cardIndex} style={{ position: "absolute", left: 10 + cardIndex * 5, top: cardIndex * 5, transform: `rotate(${(cardIndex - 1) * 3}deg)`, filter: "drop-shadow(0 12px 20px rgba(0,0,0,.45))" }}><CardBack width={210} /></div>)}
+              </div>
+            )}
             {/* corpo do pack com frisos (crimp) em cima e em baixo, como uma saqueta real */}
-            <div style={{ position: "absolute", inset: 0, borderRadius: 8, background: pack.gradient, overflow: "hidden", boxShadow: `inset 0 0 50px rgba(0,0,0,0.4), inset 0 2px 0 rgba(255,255,255,0.25), 0 0 44px ${pack.accent}44` }}>
+            <div style={{ position: "absolute", inset: 0, zIndex: 1, borderRadius: 8, background: pack.gradient, overflow: "hidden", boxShadow: `inset 0 0 50px rgba(0,0,0,0.4), inset 0 2px 0 rgba(255,255,255,0.25), 0 0 44px ${pack.accent}44` }}>
               <div style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(115deg, transparent 0 12px, rgba(255,255,255,0.06) 12px 13px)" }} />
               {/* brilho metálico vertical (folha) */}
               <div style={{ position: "absolute", top: 0, bottom: 0, left: "10%", width: 34, background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent)" }} />
@@ -1379,6 +1386,7 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
               </div>
             </div>
           </div>
+          </div>
           {phase === "pack" && (
             <div style={{ marginTop: 18, fontSize: 12, color: "#6f87a8" }}>
               {tearProg === 0 ? "arrasta o dedo ao longo da linha tracejada, da esquerda para a direita" : tearProg < 0.92 ? `${Math.round(tearProg * 100)}% rasgado…` : ""}
@@ -1396,7 +1404,7 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
             )}
             {revealing && <div style={{ fontFamily: FONT, color: "#9FB0C8", fontSize: 10, letterSpacing: 3, animation: "pulse 700ms ease-in-out infinite" }}>A REVELAR…</div>}
           </div>
-          <div style={{ perspective: 1100, animation: "pop 420ms ease-out" }} key={idx}>
+          <div style={{ perspective: 1100, animation: revealing ? "cardCharge 520ms ease-in-out infinite alternate" : "cardReady 460ms cubic-bezier(.16,.8,.25,1) both" }} key={idx}>
             <div style={{ position: "relative", width: 260, height: 260 * 1.42, margin: "0 auto", transformStyle: "preserve-3d", transform: flipped ? "rotateY(180deg)" : revealing ? "translateY(-8px) scale(1.025)" : "rotateY(0deg)", transition: "transform 600ms cubic-bezier(.2,.7,.3,1.1)", filter: revealing ? `drop-shadow(0 0 28px ${pack.accent}55)` : "none" }}>
               {!flipped && cards.slice(idx + 1).map((_, stackIndex) => <div key={stackIndex} style={{ position: "absolute", inset: 0, transform: `translate(${Math.min(stackIndex + 1, 2) * 5}px, ${Math.min(stackIndex + 1, 2) * 5}px)`, borderRadius: 12, background: "#101B33", border: "1px solid #22304d", zIndex: -stackIndex - 1 }} />)}
               <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden" }}><CardBack width={260} /></div>
@@ -1427,7 +1435,7 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
           </div>
           <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
             {cards.map((c, i) => (
-              <div key={i} style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+              <div key={i} style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, animation: `summaryDeal 440ms ${i * 90}ms cubic-bezier(.16,.8,.25,1) both` }}>
                 <div style={{ position: "relative" }}>
                   <Card card={c} width={150} />
                   {isNew(i) && <div style={{ position: "absolute", top: c.edition ? -20 : -8, left: "50%", transform: "translateX(-50%)", background: "#1BF5A3", color: "#04140c", fontFamily: FONT, fontWeight: 700, fontSize: 10, letterSpacing: 1, padding: "2px 8px", borderRadius: 99 }}>NOVA</div>}
@@ -2817,7 +2825,12 @@ function App() {
         @keyframes confetti { 0% { transform: translate(0,0) rotate(0); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) rotate(var(--rot)); opacity: 0; } }
         @keyframes shakeK { 0%,100% { transform: translate(0,0); } 20% { transform: translate(-6px,4px); } 40% { transform: translate(6px,-4px); } 60% { transform: translate(-4px,-3px); } 80% { transform: translate(4px,3px); } }
         .shake { animation: shakeK 450ms ease-in-out; }
+        @keyframes packEnter { 0% { transform: translate3d(0,70px,0) scale(.82) rotate(-4deg); opacity: 0; } 70% { transform: translate3d(0,-8px,0) scale(1.025) rotate(1deg); opacity: 1; } 100% { transform: translate3d(0,0,0) scale(1); opacity: 1; } }
         @keyframes packAway { 0% { transform: scale(1) translateY(0); opacity: 1; } 100% { transform: scale(0.55) translateY(90px); opacity: 0; } }
+        @keyframes cardsEmerge { 0% { transform: translate3d(0,95px,0) scale(.88); opacity: 0; } 38% { opacity: 1; } 100% { transform: translate3d(0,-145px,0) scale(1); opacity: 1; } }
+        @keyframes cardReady { 0% { transform: translate3d(0,80px,0) scale(.88) rotate(3deg); opacity: 0; } 72% { transform: translate3d(0,-7px,0) scale(1.018) rotate(-.5deg); opacity: 1; } 100% { transform: translate3d(0,0,0) scale(1); opacity: 1; } }
+        @keyframes cardCharge { 0% { transform: translate3d(0,0,0) scale(1); opacity: .92; } 100% { transform: translate3d(0,-5px,0) scale(1.018); opacity: 1; } }
+        @keyframes summaryDeal { 0% { transform: translate3d(0,45px,0) scale(.86) rotate(3deg); opacity: 0; } 100% { transform: translate3d(0,0,0) scale(1) rotate(0); opacity: 1; } }
         @keyframes wob { 0% { transform: translate(0,0) rotate(0); } 25% { transform: translate(-16px,8px) rotate(-7deg); } 50% { transform: translate(12px,-10px) rotate(6deg); } 75% { transform: translate(-8px,5px) rotate(-4deg); } 100% { transform: translate(0,0) rotate(0); } }
         @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
         button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 2px solid #1BF5A3 !important; outline-offset: 2px; }
