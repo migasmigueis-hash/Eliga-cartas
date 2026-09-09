@@ -11,6 +11,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
 import { validateObjectiveClaim } from "../_shared/objectives.ts";
+import { configuredCardPool } from "../_shared/configuredCardPool.ts";
 
 const ESCOLHAS_CAP = 10;
 
@@ -39,18 +40,19 @@ Deno.serve(async (req: Request) => {
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-  const { data: profile, error: profErr } = await admin
-    .from("profiles")
-    .select("state")
-    .eq("id", userId)
-    .single();
+  const [profileResult, configResult] = await Promise.all([
+    admin.from("profiles").select("state").eq("id", userId).single(),
+    admin.from("liga_data").select("data").eq("key", "config").single(),
+  ]);
+  const { data: profile, error: profErr } = profileResult;
   if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
 
   const state = (profile.state ?? {}) as Record<string, unknown>;
   const prevMeta = (state.meta as Record<string, unknown>) ?? {};
   const collection = (state.collection as Record<string, number>) ?? {};
 
-  const result = validateObjectiveClaim(body.id, body.periodo, prevMeta, collection);
+  const cardPool = configuredCardPool((configResult.data?.data ?? {}) as Record<string, unknown>);
+  const result = validateObjectiveClaim(body.id, body.periodo, prevMeta, collection, cardPool);
   if (result.ok === false) return jsonResponse({ error: result.error }, 400);
   if (!result.reward.startsWith("escolha")) {
     return jsonResponse({ error: "Este objetivo dá um pack, não Escolhas — abre-o na Loja/Objetivos." }, 400);
@@ -70,11 +72,15 @@ Deno.serve(async (req: Request) => {
 
   const newState = { ...state, meta, escolhas };
 
-  const { error: updErr } = await admin
+  const { data: updatedProfile, error: updErr } = await admin
     .from("profiles")
     .update({ state: newState, updated_at: new Date().toISOString() })
-    .eq("id", userId);
+    .eq("id", userId)
+    .eq("state", JSON.stringify(state))
+    .select("id")
+    .maybeSingle();
   if (updErr) return jsonResponse({ error: updErr.message }, 500);
+  if (!updatedProfile) return jsonResponse({ error: "O teu progresso mudou entretanto. Atualiza e tenta novamente." }, 409);
 
   return jsonResponse({ escolhas, meta, amount });
 });

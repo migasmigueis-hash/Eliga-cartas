@@ -263,30 +263,49 @@ function calcStreak(dias) {
   }
   return streak;
 }
-function buildAchievements({ collection, meta, jHist }) {
-  const uniques = POOL.filter((c) => (collection[c.id] || 0) > 0);
-  const nUniq = uniques.length;
+function buildAchievements({ collection, meta, jHist, prevHist, codesUsed, vitrine, twitchLogin }) {
+  const baseCardIds = new Set(BASE_POOL.filter((card) => !card.edition).map((card) => card.id));
+  const baseCards = POOL.filter((card) => baseCardIds.has(card.id));
+  const baseUniques = baseCards.filter((c) => (collection[c.id] || 0) > 0);
+  const baseOwned = baseUniques.length;
   const totalPacks = Object.values(meta.packs || {}).reduce((s, n) => s + n, 0);
   const totalTrocas = Object.values(meta.trocas || {}).reduce((s, n) => s + n, 0);
   const totalEsc = Object.values(meta.escUso || {}).reduce((s, n) => s + n, 0);
   const streak = calcStreak(meta.dias);
-  const clubeFechado = TEAMS.some((t) => POOL.filter((c) => c.team === t.id && !c.edition).every((c) => (collection[c.id] || 0) > 0));
-  const best = (jHist || []).reduce((m, e) => Math.max(m, e.total), 0);
+  const clubeFechado = TEAMS.some((t) => {
+    const cards = baseCards.filter((c) => c.team === t.id && !c.edition);
+    return cards.length > 0 && cards.every((c) => (collection[c.id] || 0) > 0);
+  });
+  const best = (jHist || []).reduce((m, e) => Math.max(m, Number(e.total) || 0), 0);
+  const claims = Object.keys(meta.claims || {}).length;
+  const predictions = prevHist || [];
   return [
-    { id: "a1", emoji: "🃏", titulo: "Primeiro Pack", desc: "Abre o teu primeiro pack", ok: totalPacks >= 1 },
-    { id: "a2", emoji: "📦", titulo: "Meio Cento", desc: "Abre 50 packs", ok: totalPacks >= 50 },
-    { id: "a3", emoji: "🏭", titulo: "Centena", desc: "Abre 100 packs", ok: totalPacks >= 100 },
-    { id: "a4", emoji: "💜", titulo: "Primeira Épica", desc: "Obtém uma carta Épica", ok: uniques.some((c) => c.rarity === "epica") },
-    { id: "a5", emoji: "🌟", titulo: "Primeira Lendária", desc: "Obtém uma carta Lendária", ok: uniques.some((c) => c.rarity === "lendaria") },
-    { id: "a6", emoji: "📚", titulo: "Meio Álbum", desc: "Tem metade da coleção", ok: nUniq >= Math.ceil(POOL.length / 2) },
-    { id: "a7", emoji: "🏆", titulo: "Coleção Completa", desc: "Tem todas as cartas", ok: nUniq >= POOL.length },
+    { id: "a1", emoji: "🃏", titulo: "Primeiro Pack", desc: "Abre o teu primeiro pack", ok: totalPacks >= 1, progress: `${Math.min(1, totalPacks)}/1` },
+    { id: "a2", emoji: "📦", titulo: "Meio Cento", desc: "Abre 50 packs", ok: totalPacks >= 50, progress: `${Math.min(50, totalPacks)}/50` },
+    { id: "a3", emoji: "🏭", titulo: "Centena", desc: "Abre 100 packs", ok: totalPacks >= 100, progress: `${Math.min(100, totalPacks)}/100` },
+    { id: "a4", emoji: "💜", titulo: "Primeira Épica", desc: "Obtém uma carta Épica do álbum base", ok: baseUniques.some((c) => c.rarity === "epica") },
+    { id: "a5", emoji: "🌟", titulo: "Primeira Lendária", desc: "Obtém uma carta Lendária do álbum base", ok: baseUniques.some((c) => c.rarity === "lendaria") },
+    { id: "a6", emoji: "📚", titulo: "Meio Álbum Base", desc: "Tem metade da coleção base", ok: baseOwned >= Math.ceil(baseCards.length / 2), progress: `${baseOwned}/${baseCards.length}` },
+    { id: "a7", emoji: "🏆", titulo: "Álbum Base Completo", desc: "Tem todas as cartas da coleção base", ok: baseOwned >= baseCards.length, progress: `${baseOwned}/${baseCards.length}` },
     { id: "a8", emoji: "🛡", titulo: "Clube Fechado", desc: "Completa as cartas de um clube", ok: clubeFechado },
-    { id: "a9", emoji: "🔁", titulo: "Negociante", desc: "Faz 5 trocas", ok: totalTrocas >= 5 },
-    { id: "a10", emoji: "🎯", titulo: "Mão Quente", desc: "Usa 10 Escolhas", ok: totalEsc >= 10 },
-    { id: "a11", emoji: "🔥", titulo: "Semana Perfeita", desc: "Entra 7 dias seguidos", ok: streak >= 7 },
-    { id: "a12", emoji: "⚡", titulo: "Jornada de 300", desc: "Marca 300+ pts numa jornada", ok: best >= 300 },
+    { id: "a9", emoji: "🔁", titulo: "Negociante", desc: "Faz 5 trocas", ok: totalTrocas >= 5, progress: `${Math.min(5, totalTrocas)}/5` },
+    { id: "a10", emoji: "🎯", titulo: "Mão Quente", desc: "Usa 10 Escolhas", ok: totalEsc >= 10, progress: `${Math.min(10, totalEsc)}/10` },
+    { id: "a11", emoji: "🔥", titulo: "Semana Perfeita", desc: "Entra 7 dias seguidos", ok: streak >= 7, progress: `${Math.min(7, streak)}/7` },
+    { id: "a12", emoji: "⚡", titulo: "Jornada de 300", desc: "Marca 300+ pts numa jornada", ok: best >= 300, progress: `${Math.min(300, best)}/300` },
     { id: "a13", emoji: "🎙", titulo: "Voz Amiga", desc: "Joga uma jornada com um caster", ok: (jHist || []).some((e) => e.hasCaster) },
     { id: "a14", emoji: "👑", titulo: "Capitã Lendária", desc: "Usa uma Lendária como capitã", ok: (jHist || []).some((e) => e.capRarity === "lendaria") },
+    { id: "a15", emoji: "🤝", titulo: "Primeiro Negócio", desc: "Faz a tua primeira troca", ok: totalTrocas >= 1, progress: `${Math.min(1, totalTrocas)}/1` },
+    { id: "a16", emoji: "🎯", titulo: "Especialista em Escolhas", desc: "Usa 25 Escolhas", ok: totalEsc >= 25, progress: `${Math.min(25, totalEsc)}/25` },
+    { id: "a17", emoji: "📅", titulo: "Quinzena eLiga", desc: "Entra 14 dias seguidos", ok: streak >= 14, progress: `${Math.min(14, streak)}/14` },
+    { id: "a18", emoji: "⚽", titulo: "Primeiro Trio", desc: "Joga a tua primeira jornada", ok: (jHist || []).length >= 1, progress: `${Math.min(1, (jHist || []).length)}/1` },
+    { id: "a19", emoji: "🏟", titulo: "Presença Regular", desc: "Joga 5 jornadas", ok: (jHist || []).length >= 5, progress: `${Math.min(5, (jHist || []).length)}/5` },
+    { id: "a20", emoji: "🚀", titulo: "Jornada de 500", desc: "Marca 500+ pts numa jornada", ok: best >= 500, progress: `${Math.min(500, best)}/500` },
+    { id: "a21", emoji: "🔮", titulo: "Primeira Previsão", desc: "Conclui uma fase de previsões", ok: predictions.length >= 1, progress: `${Math.min(1, predictions.length)}/1` },
+    { id: "a22", emoji: "🏆", titulo: "Profeta do Campeão", desc: "Acerta no campeão numa previsão", ok: predictions.some((entry) => entry.champOk) },
+    { id: "a23", emoji: "🎟", titulo: "Código Decifrado", desc: "Resgata um código promocional", ok: (codesUsed || []).length >= 1, progress: `${Math.min(1, (codesUsed || []).length)}/1` },
+    { id: "a24", emoji: "🟣", titulo: "Em Direto", desc: "Liga a tua conta Twitch", ok: !!twitchLogin },
+    { id: "a25", emoji: "🖼", titulo: "Vitrine Completa", desc: "Preenche os 3 lugares da vitrine", ok: (vitrine || []).filter((id) => id && (collection[id] || 0) > 0 && POOL.some((card) => card.id === id)).length >= 3, progress: `${(vitrine || []).filter((id) => id && (collection[id] || 0) > 0 && POOL.some((card) => card.id === id)).length}/3` },
+    { id: "a26", emoji: "✅", titulo: "Caçador de Objetivos", desc: "Reclama 5 objetivos diferentes", ok: claims >= 5, progress: `${Math.min(5, claims)}/5` },
   ];
 }
 
@@ -370,20 +389,26 @@ function buildObjectives(meta, collection) {
   const totalPacks = Object.values(meta.packs || {}).reduce((s, n) => s + n, 0);
   const temLendaria = POOL.some((c) => c.rarity === "lendaria" && (collection[c.id] || 0) > 0);
   objs.push({ id: "d-escolha1", tipo: "diario", periodo: today, titulo: "Usar 1 Escolha hoje", prog: Math.min(1, escDia), alvo: 1, reward: "base" });
-  objs.push({ id: "d-packs5", tipo: "diario", periodo: today, titulo: "Abrir 5 packs hoje", prog: Math.min(5, packsToday), alvo: 5, reward: "base" });
   objs.push({ id: "s-trocas3", tipo: "semanal", periodo: wk, titulo: "Fazer 3 trocas esta semana", prog: Math.min(3, trocasWeek), alvo: 3, reward: "finals" });
   objs.push({ id: "s-esc5", tipo: "semanal", periodo: wk, titulo: "Usar 5 Escolhas esta semana", prog: Math.min(5, escWeek), alvo: 5, reward: "finals" });
+  const totalTrocas = Object.values(meta.trocas || {}).reduce((s, n) => s + n, 0);
+  const totalEsc = Object.values(meta.escUso || {}).reduce((s, n) => s + n, 0);
+  objs.push({ id: "p-packs10", tipo: "permanente", periodo: "perm", titulo: "Abrir 10 packs no total", prog: Math.min(10, totalPacks), alvo: 10, reward: "escolha1" });
   objs.push({ id: "p-packs50", tipo: "permanente", periodo: "perm", titulo: "Abrir 50 packs no total", prog: Math.min(50, totalPacks), alvo: 50, reward: "finals" });
   objs.push({ id: "p-packs100", tipo: "permanente", periodo: "perm", titulo: "Abrir 100 packs no total", prog: Math.min(100, totalPacks), alvo: 100, reward: "finals" });
+  objs.push({ id: "p-trade1", tipo: "permanente", periodo: "perm", titulo: "Fazer a primeira troca", prog: Math.min(1, totalTrocas), alvo: 1, reward: "escolha1" });
+  objs.push({ id: "p-trades10", tipo: "permanente", periodo: "perm", titulo: "Fazer 10 trocas no total", prog: Math.min(10, totalTrocas), alvo: 10, reward: "finals" });
+  objs.push({ id: "p-esc10", tipo: "permanente", periodo: "perm", titulo: "Usar 10 Escolhas no total", prog: Math.min(10, totalEsc), alvo: 10, reward: "escolha2" });
+  objs.push({ id: "p-esc25", tipo: "permanente", periodo: "perm", titulo: "Usar 25 Escolhas no total", prog: Math.min(25, totalEsc), alvo: 25, reward: "finals" });
   objs.push({ id: "p-lendaria", tipo: "permanente", periodo: "perm", titulo: "Obter uma carta Lendária", prog: temLendaria ? 1 : 0, alvo: 1, reward: "finals" });
   // marcos de coleção — recompensados em Escolhas
-  const totalOwned = Object.keys(collection).filter((k) => (collection[k] || 0) > 0).length;
-  objs.push({ id: "p-col15", tipo: "permanente", periodo: "perm", titulo: "Ter 15 cartas diferentes na coleção", prog: Math.min(15, totalOwned), alvo: 15, reward: "escolha1" });
-  objs.push({ id: "p-col30", tipo: "permanente", periodo: "perm", titulo: "Ter 30 cartas diferentes na coleção", prog: Math.min(30, totalOwned), alvo: 30, reward: "escolha2" });
-  objs.push({ id: "p-col45", tipo: "permanente", periodo: "perm", titulo: "Ter 45 cartas diferentes na coleção", prog: Math.min(45, totalOwned), alvo: 45, reward: "escolha3" });
+  const totalOwned = BASE_POOL.filter((card) => !card.edition && (collection[card.id] || 0) > 0).length;
+  objs.push({ id: "p-col15", tipo: "permanente", periodo: "perm", titulo: "Ter 15 cartas diferentes do álbum base", prog: Math.min(15, totalOwned), alvo: 15, reward: "escolha1" });
+  objs.push({ id: "p-col30", tipo: "permanente", periodo: "perm", titulo: "Ter 30 cartas diferentes do álbum base", prog: Math.min(30, totalOwned), alvo: 30, reward: "escolha2" });
+  objs.push({ id: "p-col45", tipo: "permanente", periodo: "perm", titulo: "Ter 45 cartas diferentes do álbum base", prog: Math.min(45, totalOwned), alvo: 45, reward: "escolha3" });
   // um objetivo de coleção por cada um dos 18 clubes (clube + jogadores, sem especiais)
   TEAMS.forEach((t) => {
-    const cards = POOL.filter((c) => c.team === t.id && !c.edition);
+    const cards = BASE_POOL.filter((c) => c.team === t.id && !c.edition);
     const got = cards.filter((c) => (collection[c.id] || 0) > 0).length;
     objs.push({ id: "p-team-" + t.id, tipo: "permanente", periodo: "perm", titulo: "Colecionar todas as cartas: " + t.name, prog: got, alvo: cards.length, reward: "finals", team: t.id });
   });
@@ -638,58 +663,6 @@ async function packToPng(cards) {
   return cv.toDataURL("image/png");
 }
 
-// armazenamento: localStorage em produção (Vercel), com fallback em memória
-const memStore = {};
-const store = {
-  async get(k) {
-    try { const v = localStorage.getItem(k); return v !== null ? v : (memStore[k] ?? null); }
-    catch (e) { return memStore[k] ?? null; }
-  },
-  async set(k, v) {
-    memStore[k] = v;
-    try { localStorage.setItem(k, v); } catch (e) { /* quota excedida, fica em memória */ }
-  },
-  async delete(k) {
-    delete memStore[k];
-    try { localStorage.removeItem(k); } catch (e) {}
-  },
-};
-
-// Fase 2: na primeira entrada de uma conta sem progresso ainda guardado no Supabase,
-// tenta recuperar o que foi jogado localmente (Fase 0/1) com o mesmo nome de jogador.
-async function loadLegacyLocalState(username) {
-  try {
-    const rawCol = await store.get("eliga-tcg-col-" + username);
-    if (rawCol === null) return null; // nada para migrar
-    const collection = JSON.parse(rawCol || "{}");
-    const meta = JSON.parse((await store.get("eliga-tcg-meta-" + username)) || "{}");
-    const rawL = await store.get("eliga-tcg-lineup-" + username);
-    let lineup = { ids: [null, null, null], captain: null };
-    if (rawL) {
-      const d = JSON.parse(rawL);
-      lineup = Array.isArray(d) ? { ids: d, captain: null } : { ids: d.ids || [null, null, null], captain: d.captain ?? null };
-    }
-    const hist = JSON.parse((await store.get("eliga-tcg-hist-" + username)) || "[]");
-    const codesUsed = JSON.parse((await store.get("eliga-tcg-codes-" + username)) || "[]");
-    let escolhas = parseInt((await store.get("eliga-tcg-escolhas-" + username)) || "0") || 0;
-    const seeded = await store.get("eliga-tcg-esc-seed-" + username);
-    if (!seeded) escolhas += 5;
-    const rawSlot = await store.get("eliga-tcg-esc-slot-" + username);
-    const escSlot = rawSlot ? parseInt(rawSlot) : Math.floor(Date.now() / PICK_SLOT_MS);
-    const picksUsed = JSON.parse((await store.get("eliga-tcg-picksused-" + username)) || "{}");
-    const jHist = JSON.parse((await store.get("eliga-tcg-jhist-" + username)) || "[]");
-    const vitrine = JSON.parse((await store.get("eliga-tcg-vitrine-" + username)) || "[null,null,null]");
-    const rawPr = await store.get("eliga-tcg-prev-" + username);
-    const prevRaw = rawPr ? JSON.parse(rawPr) : null;
-    const prev = prevRaw && prevRaw.groupResult !== undefined ? prevRaw : EMPTY_PREV;
-    const muted = (await store.get("eliga-tcg-mute")) === "1";
-    const onboardDone = !!(await store.get("eliga-tcg-onboard-" + username));
-    return { collection, meta, lineup, hist, codesUsed, escolhas, escSlot, picksUsed, jHist, vitrine, prev, muted, onboardDone };
-  } catch (e) {
-    return null;
-  }
-}
-
 const FONT = "'Chakra Petch',sans-serif";
 const btn = (primary) => ({
   fontFamily: FONT, fontWeight: 700, fontSize: 13, letterSpacing: 1,
@@ -697,6 +670,89 @@ const btn = (primary) => ({
   background: primary ? "#1BF5A3" : "transparent", color: primary ? "#04140c" : "#1BF5A3",
   border: primary ? "none" : "1px solid #1BF5A366",
 });
+
+const TUTORIAL_STEPS = [
+  {
+    eyebrow: "COMEÇA AQUI", icon: "01", title: "O teu ciclo de jogo", accent: "#1BF5A3",
+    text: "Coleciona cartas, transforma-as numa equipa e acompanha a eLiga jornada após jornada.",
+    items: [
+      ["1", "Ganha cartas", "Abre packs, cumpre objetivos e usa códigos ou pontos Twitch."],
+      ["2", "Melhora a coleção", "Guarda cartas únicas e usa os duplicados nas Trocas."],
+      ["3", "Entra em campo", "Monta uma equipa, faz previsões e soma pontos eLiga no ranking."],
+    ],
+    tip: "Não precisas de fazer tudo já. A Loja é o melhor primeiro destino.", actionTab: "loja", actionLabel: "Abrir Loja",
+  },
+  {
+    eyebrow: "PACKS E RARIDADES", icon: "02", title: "Cada pack traz 3 cartas", accent: "#39E6FF",
+    text: "As edições têm catálogos próprios e probabilidades visíveis. Consulta-as antes de abrir.",
+    items: [
+      ["C", "Comum → Lendária", "A raridade influencia a força do efeito da carta e a probabilidade de sair."],
+      ["%", "Probabilidades públicas", "Na Loja, abre “Ver probabilidades” para conhecer as hipóteses de cada carta."],
+      ["+", "Mais formas de abrir", "Objetivos, códigos promocionais, previsões e Twitch também podem dar packs."],
+    ],
+    tip: "Os códigos aparecem nas transmissões e redes da eLiga e só funcionam uma vez por conta.", actionTab: "loja", actionLabel: "Ver packs",
+  },
+  {
+    eyebrow: "CARTAS E COLEÇÃO", icon: "03", title: "Não olhes apenas para o OVR", accent: "#F2C14E",
+    text: "Cada carta tem clube, raridade, OVR e um efeito que altera a pontuação nas jornadas.",
+    items: [
+      ["FX", "Efeitos diferentes", "Vitórias, golos, empates e outras situações podem ativar bónus próprios."],
+      ["×2", "Capitão", "Na Competição, a carta escolhida como capitão vale o dobro dos pontos."],
+      ["★", "Vitrine", "No Perfil, escolhe até 3 cartas para destacar na tua montra pública."],
+    ],
+    tip: "Usa os filtros por raridade, clube e edição para preparar a equipa mais depressa.", actionTab: "colecao", actionLabel: "Explorar coleção",
+  },
+  {
+    eyebrow: "TROCAS E OBJETIVOS", icon: "04", title: "Duplicados também têm valor", accent: "#FF7BAC",
+    text: "A coleção continua a progredir mesmo quando volta a sair uma carta que já tens.",
+    items: [
+      ["10", "Troca de raridade", "Entrega 10 duplicados da mesma raridade para receber uma carta do nível seguinte."],
+      ["✓", "Objetivos", "Os diários renovam todos os dias, os semanais à segunda e os permanentes não expiram."],
+      ["🎁", "Reclama a recompensa", "Um objetivo concluído só entrega o prémio depois de carregares em Reclamar."],
+    ],
+    tip: "Manténs sempre uma cópia de cada carta; apenas os exemplares repetidos entram nas Trocas.", actionTab: "objetivos", actionLabel: "Ver objetivos",
+  },
+  {
+    eyebrow: "ESCOLHAS", icon: "05", title: "Escolhe uma carta às cegas", accent: "#39E6FF",
+    text: "Cada conjunto mostra 5 cartas antes de as baralhar. Depois decides uma posição e ficas com essa carta.",
+    items: [
+      ["1", "Conjuntos normais", "Custam 1 Escolha. Cada conjunto pode ser usado uma vez por ciclo de 6 horas."],
+      ["3", "Conjunto premium", "Custa 3 Escolhas e não contém cartas comuns."],
+      ["6H", "Regeneração", "Recebes 1 Escolha por cada 6 horas decorridas, até ao limite de 10."],
+    ],
+    tip: "Objetivos e códigos também dão Escolhas, mas nunca ultrapassam o limite de 10.", actionTab: "escolhas", actionLabel: "Usar Escolhas",
+  },
+  {
+    eyebrow: "COMPETIÇÃO", icon: "06", title: "Monta a equipa da jornada", accent: "#1BF5A3",
+    text: "Escolhe 3 cartas elegíveis e um capitão. Os resultados reais e os efeitos das cartas decidem os pontos.",
+    items: [
+      ["3", "Três titulares", "Em modo real, usa cartas dos clubes que jogam na fase atual; casters são sempre elegíveis."],
+      ["C", "Um capitão", "A pontuação total dessa carta é duplicada, incluindo os efeitos aplicáveis."],
+      ["🔒", "Submete a tempo", "Podes alterar a equipa enquanto a fase aceitar submissões. Depois, aguarda a avaliação."],
+    ],
+    tip: "Compara efeitos e adversários. A carta com maior OVR nem sempre é a melhor escolha para a fase.", actionTab: "competicao", actionLabel: "Montar equipa",
+  },
+  {
+    eyebrow: "PREVISÕES E RANKING", icon: "07", title: "Prevê o caminho até ao título", accent: "#F2C14E",
+    text: "Escolhe apurados e vencedores das eliminatórias antes do prazo. Cada acerto soma pontos eLiga.",
+    items: [
+      ["+10", "Apurados e quartos", "Cada apurado certo e cada vencedor dos quartos vale 10 pontos."],
+      ["+15", "Meias-finais", "Cada finalista corretamente previsto vale 15 pontos."],
+      ["+50", "Campeão", "Acertar no campeão vale 50 pontos; bons resultados também podem desbloquear packs."],
+    ],
+    tip: "O ranking junta os pontos da Competição e das Previsões. Pontos Twitch são uma moeda separada.", actionTab: "previsoes", actionLabel: "Fazer previsões",
+  },
+  {
+    eyebrow: "TWITCH E PERFIL", icon: "08", title: "Leva a transmissão contigo", accent: "#B991FF",
+    text: "Liga a Twitch para receber pontos resgatados durante as transmissões e gastá-los em packs elegíveis.",
+    items: [
+      ["TV", "Liga uma vez", "Faz a associação segura no Perfil e confirma o estado da ligação e o saldo Twitch."],
+      ["PTS", "Saldo separado", "Os pontos Twitch compram packs, mas não alteram a tua posição no ranking eLiga."],
+      ["?", "Volta a este guia", "O botão de ajuda no cabeçalho abre o tutorial sempre que precisares."],
+    ],
+    tip: "Também podes gerir o som, editar a vitrine e terminar sessão no Perfil e no cabeçalho.", actionTab: "perfil", actionLabel: "Abrir Perfil",
+  },
+];
 
 /* ---------- logo de clube com fallback ---------- */
 function ClubLogo({ team, size, dim, imageUrl }) {
@@ -1401,20 +1457,20 @@ function AuthScreen({ onLogin }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {mode === "registo" && (
             <div>
-              <label style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>NOME DE JOGADOR</label>
-              <input style={{ ...input, marginTop: 6 }} value={user} onChange={(e) => setUser(e.target.value)} placeholder="ex: campeao_slb" maxLength={16} onKeyDown={(e) => e.key === "Enter" && submit()} />
+              <label htmlFor="auth-username" style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>NOME DE JOGADOR</label>
+              <input id="auth-username" name="username" autoComplete="username" spellCheck={false} style={{ ...input, marginTop: 6 }} value={user} onChange={(e) => setUser(e.target.value)} placeholder="ex: campeao_slb" maxLength={16} onKeyDown={(e) => e.key === "Enter" && submit()} />
             </div>
           )}
           <div>
-            <label style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>EMAIL</label>
-            <input style={{ ...input, marginTop: 6 }} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@exemplo.com" onKeyDown={(e) => e.key === "Enter" && submit()} />
+            <label htmlFor="auth-email" style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>EMAIL</label>
+            <input id="auth-email" name="email" autoComplete="email" spellCheck={false} style={{ ...input, marginTop: 6 }} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@exemplo.com" onKeyDown={(e) => e.key === "Enter" && submit()} />
           </div>
           <div>
-            <label style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>PALAVRA-PASSE</label>
-            <input style={{ ...input, marginTop: 6 }} type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" onKeyDown={(e) => e.key === "Enter" && submit()} />
+            <label htmlFor="auth-password" style={{ fontSize: 11, letterSpacing: 1.5, color: "#8fa3bd", fontFamily: FONT }}>PALAVRA-PASSE</label>
+            <input id="auth-password" name="password" autoComplete={mode === "registo" ? "new-password" : "current-password"} style={{ ...input, marginTop: 6 }} type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" onKeyDown={(e) => e.key === "Enter" && submit()} />
           </div>
-          {error && <div style={{ fontSize: 12, color: "#ff7b8a", background: "#ff7b8a14", border: "1px solid #ff7b8a33", borderRadius: 8, padding: "8px 12px" }}>{error}</div>}
-          {info && <div style={{ fontSize: 12, color: "#1BF5A3", background: "#1BF5A314", border: "1px solid #1BF5A333", borderRadius: 8, padding: "8px 12px" }}>{info}</div>}
+          {error && <div role="alert" style={{ fontSize: 12, color: "#ff7b8a", background: "#ff7b8a14", border: "1px solid #ff7b8a33", borderRadius: 8, padding: "8px 12px" }}>{error}</div>}
+          {info && <div role="status" style={{ fontSize: 12, color: "#1BF5A3", background: "#1BF5A314", border: "1px solid #1BF5A333", borderRadius: 8, padding: "8px 12px" }}>{info}</div>}
           <button onClick={submit} disabled={busy} style={{ ...btn(true), width: "100%", opacity: busy ? 0.6 : 1, marginTop: 4 }}>
             {busy ? "Um momento…" : mode === "registo" ? "Criar conta e jogar" : "Entrar"}
           </button>
@@ -1491,7 +1547,7 @@ function ProfileEditor({ username, onUsernameChange }) {
       <label style={{ display: "block", marginTop: 14 }}><span style={fieldLabel}>BIOGRAFIA</span><textarea style={{ ...input, minHeight: 82, resize: "vertical", lineHeight: 1.5 }} value={form.bio} maxLength={240} onChange={(event) => change("bio", event.target.value)} /></label>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
         <button onClick={save} disabled={saving} style={{ ...btn(true), opacity: saving ? 0.55 : 1 }}>{saving ? "A guardar…" : "Guardar perfil"}</button>
-        {message && <span style={{ fontSize: 12, color: message.ok ? "#1BF5A3" : "#ff8292" }}>{message.text}</span>}
+        {message && <span role={message.ok ? "status" : "alert"} style={{ fontSize: 12, color: message.ok ? "#1BF5A3" : "#ff8292" }}>{message.text}</span>}
       </div>
     </section>
   );
@@ -1601,25 +1657,35 @@ function App() {
   const [captain, setCaptain] = useState(null);
   const [pickSlot, setPickSlot] = useState(null);
   const [compResult, setCompResult] = useState(null);
+  const [lastSeenCompetitionResult, setLastSeenCompetitionResult] = useState(null);
   const [ligaConfig, setLigaConfig] = useState(null); // config da liga (modo, etapa, fase, grupo)
   CARD_IMAGE_OVERRIDES = ligaConfig?.cardImages || {};
   const runtimeBaseCards = BASE_POOL.map((card) => {
     const override = ligaConfig?.baseCardOverrides?.[card.id] || {};
     return { ...card, ...override, id: card.id, edition: card.edition, batchId: card.batchId, teamData: TEAMS.find((team) => team.id === (override.team ?? card.team)) };
   });
-  const publishedBatch = ligaConfig?.customBatches?.find((batch) => batch.status === "published");
-  const publishedCards = publishedBatch?.cards?.map((card) => ({ ...card, teamData: TEAMS.find((team) => team.id === card.team) })) || [];
+  const publishedCustomBatches = (ligaConfig?.customBatches || []).filter((batch) => batch.status === "published");
+  const publishedCards = publishedCustomBatches.flatMap((batch) =>
+    (batch.cards || []).map((card) => ({ ...card, batchId: batch.id, teamData: TEAMS.find((team) => team.id === card.team) }))
+  );
   POOL = [...runtimeBaseCards, ...publishedCards];
-  const etapa1Pack = PACKS.find((pack) => pack.id === "etapa1");
-  if (etapa1Pack) {
-    etapa1Pack.locked = !publishedBatch;
-    etapa1Pack.lockLabel = publishedBatch ? null : "Fevereiro 2027";
-    etapa1Pack.name = publishedBatch?.name || "Pack Etapa 1 · 26/27";
-    etapa1Pack.sub = publishedBatch ? `${publishedCards.length} carta${publishedCards.length !== 1 ? "s exclusivas" : " exclusiva"}` : "Cartas únicas da Etapa 1";
-    etapa1Pack.desc = publishedBatch?.description || "Disponível com o arranque da nova época, em fevereiro de 2027.";
-    etapa1Pack.accent = publishedCards[0]?.customColor || "#6f87a8";
-    etapa1Pack.twitchCost = publishedBatch ? 150 : undefined;
-  }
+  const customStorePacks = publishedCustomBatches.map((batch) => {
+    const cards = batch.cards || [];
+    return {
+      ...PACKS.find((pack) => pack.id === "etapa1"),
+      id: `custom:${batch.id}`,
+      name: batch.name,
+      sub: `${cards.length} carta${cards.length !== 1 ? "s exclusivas" : " exclusiva"}`,
+      desc: batch.description || "Cartas exclusivas desta edição.",
+      accent: cards[0]?.customColor || "#6f87a8",
+      locked: false,
+      lockLabel: null,
+      twitchCost: 150,
+    };
+  });
+  const storePacks = PACKS.flatMap((pack) =>
+    pack.id === "etapa1" && customStorePacks.length ? customStorePacks : [pack]
+  );
   const [adminSyncLog, setAdminSyncLog] = useState(null); // resultado do último sync
   const [adminSyncing, setAdminSyncing] = useState(false);
   const [adminConfigSaving, setAdminConfigSaving] = useState(false);
@@ -1697,6 +1763,9 @@ function App() {
   const [pickClub, setPickClub] = useState("todos");
   const [zoom, setZoom] = useState(null);
   const loaded = useRef(false);
+  const tutorialReplay = useRef(false);
+  const tutorialPanelRef = useRef(null);
+  const tutorialReturnFocus = useRef(null);
 
   useEffect(() => {
     if (!zoom) return undefined;
@@ -1740,8 +1809,7 @@ function App() {
     window.history.replaceState({}, "", window.location.pathname);
   }, []);
 
-  // carregar progresso do utilizador a partir do Supabase (profiles.state),
-  // com migração pontual do que existia em localStorage nas Fases 0/1
+  // carregar progresso do utilizador a partir do Supabase (profiles.state)
   useEffect(() => {
     if (!username || !userId) return;
     loaded.current = false;
@@ -1776,8 +1844,18 @@ function App() {
       } catch (e) { /* tabela pode não existir ainda */ }
 
       let st = profile?.state && Object.keys(profile.state).length > 0 ? profile.state : null;
-      if (!st) st = await loadLegacyLocalState(username);
       st = st || {};
+
+      try {
+        const preferences = {
+          lineup: st.lineup || { ids: [null, null, null], captain: null },
+          vitrine: st.vitrine || [null, null, null],
+          muted: !!st.muted,
+          onboardDone: !!st.onboardDone,
+        };
+        const { data: syncedState, error: syncError } = await supabase.rpc("sync_player_state", { p_preferences: preferences });
+        if (!syncError && syncedState) st = syncedState;
+      } catch (e) { /* a migração pode ainda não estar aplicada */ }
 
       setCollection(st.collection || {});
 
@@ -1799,6 +1877,7 @@ function App() {
       setEscSlot(st.escSlot ?? Math.floor(Date.now() / PICK_SLOT_MS));
       setPicksUsed(st.picksUsed || {});
       setJHist(st.jHist || []);
+      setLastSeenCompetitionResult(st.lastSeenCompetitionResult ?? null);
       setVitrine(st.vitrine || [null, null, null]);
       setPrev(st.prev && st.prev.groupResult !== undefined ? st.prev : EMPTY_PREV);
       setPrevHist(Array.isArray(st.prevHist) ? st.prevHist : []);
@@ -1809,31 +1888,22 @@ function App() {
     })();
   }, [username, userId]);
 
-  // guardar progresso do utilizador no Supabase (profiles.state), com debounce
+  // guardar apenas preferências; progressão e recompensas são server-authoritative
   useEffect(() => {
     if (!loaded.current || !username || !userId) return;
-    const state = {
-      collection, meta,
+    const preferences = {
       lineup: { ids: lineup, captain },
-      hist: hist.slice(0, 50),
-      codesUsed,
-      escolhas,
-      escSlot,
-      picksUsed,
-      jHist: jHist.slice(0, 30),
-      prevHist: prevHist.slice(0, 30),
       vitrine,
-      prev,
-      compSubmit,
       muted,
-      onboardDone: onboardStep === null,
+      onboardDone: tutorialReplay.current || onboardStep === null,
+      ...(lastSeenCompetitionResult != null ? { lastSeenCompetitionResult } : {}),
     };
     const t = setTimeout(() => {
-      supabase.from("profiles").update({ state, updated_at: new Date().toISOString() }).eq("id", userId)
+      supabase.rpc("sync_player_state", { p_preferences: preferences })
         .then(({ error }) => { if (error) console.error("Erro ao guardar progresso:", error.message); });
     }, 600);
     return () => clearTimeout(t);
-  }, [collection, meta, lineup, captain, hist, codesUsed, escolhas, picksUsed, escSlot, jHist, vitrine, prev, prevHist, compSubmit, muted, onboardStep, username, userId]);
+  }, [lineup, captain, vitrine, muted, onboardStep, lastSeenCompetitionResult, username, userId]);
 
 
   const linkTwitch = async () => {
@@ -1847,7 +1917,7 @@ function App() {
 
   const logout = async () => {
     await supabase.auth.signOut();
-    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompEditing(false); setCompResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
+    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompEditing(false); setCompResult(null); setLastSeenCompetitionResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
   const addCards = (cards) => setCollection((prev) => {
@@ -1902,7 +1972,7 @@ function App() {
   };
 
   // ---- objetivos ----
-  const objectives = useMemo(() => buildObjectives(meta, collection), [meta, collection]);
+  const objectives = useMemo(() => buildObjectives(meta, collection), [meta, collection, ligaConfig]);
   const isClaimable = (o) => o.prog >= o.alvo && meta.claims[o.id] !== o.periodo;
   const claimableCount = objectives.filter(isClaimable).length;
   const claimObjective = async (o) => {
@@ -2075,6 +2145,34 @@ function App() {
     }));
     setCompResult({ rows, total: e.total, j: e.j, label: e.label });
   };
+  useEffect(() => {
+    if (tab !== "competicao" || !userId) return undefined;
+    let cancelled = false;
+    (async () => {
+      const { data: profile } = await supabase.from("profiles").select("state").eq("id", userId).single();
+      if (cancelled || !profile?.state) return;
+      const serverState = profile.state;
+      const serverHistory = Array.isArray(serverState.jHist) ? serverState.jHist : [];
+      setJHist(serverHistory);
+      setCompSubmit(serverState.compSubmit || null);
+      const latest = serverHistory.find((entry) => entry?.modo === "real" && Array.isArray(entry.rows) && entry.rows.length > 0);
+      const latestTime = Number(latest?.t);
+      const serverSeenTime = Number(serverState.lastSeenCompetitionResult) || 0;
+      const localSeenTime = Number(lastSeenCompetitionResult) || 0;
+      if (!latest || !Number.isFinite(latestTime) || latestTime <= Math.max(serverSeenTime, localSeenTime)) return;
+      const rows = latest.rows.filter((row) => row && typeof row === "object" && typeof row.cardId === "string").map((row) => ({
+        ...row,
+        card: POOL.find((card) => card.id === row.cardId),
+        perf: { ...(row.perf || {}), games: (Array.isArray(row.perf?.games) ? row.perf.games : []).filter((game) => game && typeof game === "object").map((game) => ({ ...game, opp: TEAMS.find((team) => team.id === game.opp) || { id: game.opp, name: game.opp } })) },
+      })).filter((row) => row.card);
+      if (!rows.length) return;
+      setCompResult({ rows, total: latest.total, j: latest.j, label: latest.label, evaluatedNotice: true });
+      setLastSeenCompetitionResult(latestTime);
+      supabase.rpc("sync_player_state", { p_preferences: { lastSeenCompetitionResult: latestTime } })
+        .then(({ error }) => { if (error) console.error("Erro ao guardar resultado visto:", error.message); });
+    })();
+    return () => { cancelled = true; };
+  }, [tab, userId, lastSeenCompetitionResult]);
   const pickCard = (card) => {
     if (pickSlot === null) return;
     setLineup((l) => l.map((id, i) => (i === pickSlot ? card.id : id)));
@@ -2125,7 +2223,40 @@ function App() {
       }
     } catch (e) { /* partilha cancelada */ }
   };
-  const finishOnboard = () => setOnboardStep(null);
+  const finishOnboard = () => {
+    const returnTarget = tutorialReturnFocus.current;
+    tutorialReplay.current = false;
+    tutorialReturnFocus.current = null;
+    setOnboardStep(null);
+    setTimeout(() => returnTarget?.focus(), 0);
+  };
+  const openTutorial = () => {
+    tutorialReturnFocus.current = document.activeElement;
+    tutorialReplay.current = true;
+    setOnboardStep(0);
+  };
+  const leaveTutorialFor = (nextTab) => { finishOnboard(); setTab(nextTab); };
+  useEffect(() => {
+    if (onboardStep === null || !tutorialPanelRef.current) return undefined;
+    const panel = tutorialPanelRef.current;
+    panel.querySelector("[data-tutorial-close]")?.focus();
+    const handleTutorialKeys = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finishOnboard();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...panel.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", handleTutorialKeys);
+    return () => document.removeEventListener("keydown", handleTutorialKeys);
+  }, [onboardStep === null]);
   const toggleMute = () => setMuted((m) => !m);
   const directTradeGo = async (rarity, target) => {
     setDirectTrade(null);
@@ -2413,6 +2544,7 @@ function App() {
   };
 
   const adminResetRanking = async () => {
+    if (!window.confirm("Limpar as jornadas de todos os jogadores e reiniciar o ranking? Esta ação não pode ser desfeita.")) return;
     setJHist([]);
     try {
       const { error } = await supabase.rpc("admin_reset_competicao");
@@ -2464,9 +2596,9 @@ function App() {
   // ---- Escolhas (Wonder Pick) ----
   const pickSlotNow = Math.floor(now / PICK_SLOT_MS);
   const boardKey = String(pickSlotNow);
-  const wonderBoards = useMemo(() => [0, 1, 2].map((i) => buildPickBoard(pickSlotNow + i * 7919)), [pickSlotNow]);
+  const wonderBoards = useMemo(() => [0, 1, 2].map((i) => buildPickBoard(pickSlotNow + i * 7919)), [pickSlotNow, ligaConfig]);
   const boardKeys = [0, 1, 2].map((i) => boardKey + "-" + i);
-  const premiumBoard = useMemo(() => buildPickBoard(pickSlotNow + 777777, true), [pickSlotNow]);
+  const premiumBoard = useMemo(() => buildPickBoard(pickSlotNow + 777777, true), [pickSlotNow, ligaConfig]);
   const premiumKey = boardKey + "-p";
   const anyBoardFree = (escolhas > 0 && boardKeys.some((k) => !picksUsed[k])) || (escolhas >= 3 && !picksUsed[premiumKey]);
   const nextBoardIn = (pickSlotNow + 1) * PICK_SLOT_MS - now;
@@ -2496,17 +2628,21 @@ function App() {
     return true;
   };
 
-  // regeneração passiva: +1 por cada bloco de 6 horas decorrido, até ao limite de 10
+  // regeneração passiva validada pelo relógio do servidor
   useEffect(() => {
     if (!username || escSlot === null) return;
     if (pickSlotNow > escSlot) {
-      const elapsedSlots = pickSlotNow - escSlot;
-      const gain = Math.min(elapsedSlots, Math.max(0, PASSIVE_ESCOLHAS_CAP - escolhas));
-      if (gain > 0) {
-        setEscolhas((current) => Math.min(PASSIVE_ESCOLHAS_CAP, current + elapsedSlots));
-        setToast(`+${gain} Escolha${gain > 1 ? "s" : ""}! 🎯 (regeneras 1 a cada 6h)`); setTimeout(() => setToast(null), 2800);
-      }
-      setEscSlot(pickSlotNow);
+      supabase.rpc("sync_player_state", { p_preferences: {} }).then(({ data, error }) => {
+        if (error || !data) return;
+        const nextChoices = Number(data.escolhas) || 0;
+        const gain = Math.max(0, nextChoices - escolhas);
+        setEscolhas(nextChoices);
+        setEscSlot(Number(data.escSlot));
+        if (data.meta) setMeta(data.meta);
+        if (gain > 0) {
+          setToast(`+${gain} Escolha${gain > 1 ? "s" : ""}! 🎯 (regeneras 1 a cada 6h)`); setTimeout(() => setToast(null), 2800);
+        }
+      });
     }
   }, [pickSlotNow, escSlot, escolhas, username]);
 
@@ -2591,7 +2727,7 @@ function App() {
         @keyframes packAway { 0% { transform: scale(1) translateY(0); opacity: 1; } 100% { transform: scale(0.55) translateY(90px); opacity: 0; } }
         @keyframes wob { 0% { transform: translate(0,0) rotate(0); } 25% { transform: translate(-16px,8px) rotate(-7deg); } 50% { transform: translate(12px,-10px) rotate(6deg); } 75% { transform: translate(-8px,5px) rotate(-4deg); } 100% { transform: translate(0,0) rotate(0); } }
         @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
-        button:focus-visible, input:focus-visible { outline: 2px solid #1BF5A3; outline-offset: 2px; }
+        button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 2px solid #1BF5A3 !important; outline-offset: 2px; }
         ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: #1BF5A344; border-radius: 99px; }
         .topnav { display: flex; gap: 4px; overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
         .topnav::-webkit-scrollbar { display: none; }
@@ -2603,7 +2739,13 @@ function App() {
         }
         @media (max-width: 760px) {
           header { row-gap: 8px; }
-          .topnav { order: 3; flex-basis: 100%; }
+          .topnav { order: 3; flex-basis: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; overflow: visible; }
+          .topnav > button { width: 100%; min-width: 0; padding: 8px 6px !important; font-size: 11px !important; overflow: hidden; text-overflow: ellipsis; }
+          .tutorial-panel { padding: 20px 16px !important; max-height: calc(100vh - 24px) !important; }
+          .tutorial-grid { grid-template-columns: 1fr !important; }
+          .tutorial-footer { align-items: stretch !important; }
+          .tutorial-footer > div { width: 100%; }
+          .tutorial-footer button { flex: 1; }
         }
       `}</style>
       {children}
@@ -2652,8 +2794,9 @@ function App() {
             </button>
           )}
           <div style={{ display: "flex", alignItems: "center", gap: 8, borderLeft: "1px solid #22304d", paddingLeft: 14 }}>
+            <button onClick={openTutorial} aria-label="Abrir tutorial" title="Tutorial" style={{ width: 30, height: 30, display: "grid", placeItems: "center", fontFamily: FONT, fontWeight: 700, fontSize: 14, borderRadius: "50%", cursor: "pointer", color: "#39E6FF", background: "#39E6FF12", border: "1px solid #39E6FF55" }}>?</button>
             <button onClick={toggleMute} aria-label={muted ? "Ativar som" : "Silenciar som"} style={{ fontSize: 15, padding: "4px 8px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d" }}>{muted ? "🔇" : "🔊"}</button>
-            <span style={{ fontFamily: FONT, fontSize: 12, color: "#9FB0C8" }}>{username}</span>
+            <button onClick={() => setTab("perfil")} aria-label="Abrir Perfil" title="Perfil" style={{ fontFamily: FONT, fontSize: 12, color: tab === "perfil" ? "#1BF5A3" : "#9FB0C8", padding: 0, cursor: "pointer", background: "transparent", border: "none" }}>{username}</button>
             <button onClick={logout} style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 1, padding: "5px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px solid #22304d", color: "#8fa3bd" }}>Sair</button>
           </div>
         </div>
@@ -2681,7 +2824,7 @@ function App() {
             )}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 20 }}>
-            {PACKS.map((p) => (
+            {storePacks.map((p) => (
               <div key={p.id} style={{ borderRadius: 16, overflow: "hidden", background: "#0E162E", border: `1px solid ${p.locked ? "#22304d" : p.accent + "44"}`, display: "flex", flexDirection: "column" }}>
                 <div style={{ height: 170, background: p.gradient, position: "relative", overflow: "hidden", filter: p.locked ? "grayscale(0.8) brightness(0.6)" : "none" }}>
                   <div style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(115deg, transparent 0 12px, rgba(255,255,255,0.07) 12px 13px)" }} />
@@ -2926,7 +3069,9 @@ function App() {
             </div>
           </div>
           <div style={{ marginTop: 10, fontSize: 12, color: "#6f87a8" }}>
-            Cada jornada tem 2 jogos por carta, contra adversários sorteados — vencer equipas do fundo da tabela é mais fácil do que vencer o top 8. Os 9 efeitos de carta (Artilheiro, Vencedor, Consistente, Imparável, Resiliente, Caça-Grandes, Espírito de Clube, Mentor e Fortaleza) somam-se a estes valores e escalam com a raridade. Escolhe ainda um capitão: essa carta vale o dobro dos pontos. As cartas de caster não jogam — valem pelos efeitos únicos de apoio (Hype, Voz da Liga, Analista).
+            {ligaConfig?.modo === "real"
+              ? "Os pontos usam os resultados reais da fase ativa. Os efeitos das cartas somam-se a esses resultados e escalam com a raridade. Escolhe ainda um capitão: essa carta vale o dobro dos pontos. As cartas de caster valem pelos efeitos únicos de apoio (Hype, Voz da Liga e Analista)."
+              : "Cada jornada tem 2 jogos por carta, contra adversários sorteados — vencer equipas do fundo da tabela é mais fácil do que vencer o top 8. Os 9 efeitos de carta somam-se a estes valores e escalam com a raridade. Escolhe ainda um capitão: essa carta vale o dobro dos pontos. As cartas de caster não jogam — valem pelos efeitos únicos de apoio."}
           </div>
 
           {/* equipa do utilizador */}
@@ -3648,7 +3793,7 @@ function App() {
       )}
 
       {tab === "perfil" && (() => {
-        const conquistas = buildAchievements({ collection, meta, jHist });
+        const conquistas = buildAchievements({ collection, meta, jHist, prevHist, codesUsed, vitrine, twitchLogin });
         const desbloq = conquistas.filter((a) => a.ok).length;
         const totalPacks = Object.values(meta.packs || {}).reduce((s, n) => s + n, 0);
         const totalTrocas = Object.values(meta.trocas || {}).reduce((s, n) => s + n, 0);
@@ -3724,6 +3869,7 @@ function App() {
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, color: a.ok ? "#1BF5A3" : "#8fa3bd" }}>{a.titulo}</div>
                     <div style={{ fontSize: 11, color: "#6f87a8" }}>{a.desc}</div>
+                    {!a.ok && a.progress && <div style={{ fontFamily: FONT, fontSize: 10, color: "#536684", marginTop: 3 }}>{a.progress}</div>}
                   </div>
                   {a.ok && <span style={{ marginLeft: "auto", color: "#1BF5A3", fontSize: 14 }}>✓</span>}
                 </div>
@@ -3860,6 +4006,7 @@ function App() {
       {compResult && (
         <div style={{ position: "fixed", inset: 0, zIndex: 56, background: "rgba(3,6,12,0.93)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setCompResult(null)}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: 620, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", background: "#0E162E", border: "1px solid #1BF5A344", borderRadius: 18, padding: 24, animation: "pop 320ms ease-out" }}>
+            {compResult.evaluatedNotice && <div style={{ textAlign: "center", fontFamily: FONT, fontWeight: 700, fontSize: 11, letterSpacing: 2, color: "#F2C14E", marginBottom: 7 }}>JORNADA AVALIADA · NOVOS PONTOS</div>}
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff", textAlign: "center" }}>{compResult.label || `Resultado da jornada ${compResult.j}`}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, margin: "20px 0" }}>
               {compResult.rows.map((r, i) => (
@@ -3888,7 +4035,7 @@ function App() {
             </div>
             <div style={{ textAlign: "center", fontFamily: FONT, fontWeight: 700, fontSize: 26, color: "#1BF5A3", textShadow: "0 0 18px rgba(27,245,163,0.5)" }}>+{compResult.total} pontos</div>
             <div style={{ display: "flex", justifyContent: "center", marginTop: 20 }}>
-              <button onClick={() => setCompResult(null)} style={btn(true)}>Ver ranking</button>
+              <button onClick={() => { setCompResult(null); setTab("ranking"); }} style={btn(true)}>Ver ranking</button>
             </div>
           </div>
         </div>
@@ -4325,48 +4472,67 @@ function App() {
       })()}
 
       {onboardStep !== null && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 80, background: "rgba(3,6,12,0.94)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div style={{ width: 420, maxWidth: "100%", background: "#0E162E", border: "1px solid #1BF5A344", borderRadius: 18, padding: 28, textAlign: "center", animation: "pop 300ms ease-out" }}>
-            {[
-              { emoji: "🎴", titulo: "Abre packs, coleciona cartas", texto: "Cada pack tem 3 cartas dos clubes e jogadores da eLiga Portugal. Quanto mais rara a carta, mais espetacular a revelação." },
-              { emoji: "🔁", titulo: "Troca e completa objetivos", texto: "Junta 10 duplicados e troca-os por uma carta de raridade superior. Os objetivos diários, semanais e permanentes dão packs extra — volta todos os dias!" },
-              { emoji: "🏆", titulo: "Compete com a tua equipa", texto: "Escolhe 3 cartas, define um capitão (vale ×2!) e pontua em cada jornada com os efeitos das cartas. Sobe no ranking contra os outros colecionadores." },
-              { emoji: "🟣", titulo: "Ganha packs com a Twitch", texto: "Liga a tua conta Twitch (no Perfil) e resgata \"Pontos eLiga Cartas\" nos Channel Points da transmissão — troca esses pontos por packs na Loja." },
-            ].map((s, i) => i === onboardStep && (
-              <div key={i}>
-                <div style={{ fontSize: 52, marginBottom: 12 }}>{s.emoji}</div>
-                <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff", marginBottom: 10 }}>{s.titulo}</div>
-                <div style={{ fontSize: 14, color: "#9FB0C8", lineHeight: 1.6 }}>{s.texto}</div>
+        <div role="dialog" aria-modal="true" aria-labelledby="tutorial-title" style={{ position: "fixed", inset: 0, zIndex: 80, background: "rgba(3,6,12,0.94)", display: "flex", alignItems: "center", justifyContent: "center", padding: 12 }}>
+          <div ref={tutorialPanelRef} className="tutorial-panel" style={{ width: 760, maxWidth: "100%", maxHeight: "calc(100vh - 40px)", overflowY: "auto", background: "#0E162E", border: `1px solid ${TUTORIAL_STEPS[onboardStep].accent}55`, borderRadius: 16, padding: "24px 26px", animation: "pop 300ms ease-out", boxShadow: "0 24px 80px rgba(0,0,0,0.55)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 18 }}>
+              <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 11, letterSpacing: 1.8, color: TUTORIAL_STEPS[onboardStep].accent }}>
+                GUIA eLIGA CARTAS · {onboardStep + 1}/{TUTORIAL_STEPS.length}
+              </div>
+              <button data-tutorial-close onClick={finishOnboard} aria-label="Fechar tutorial" title="Fechar" style={{ width: 32, height: 32, borderRadius: "50%", cursor: "pointer", background: "transparent", border: "1px solid #22304d", color: "#9FB0C8", fontSize: 18 }}>×</button>
+            </div>
+
+            <div style={{ display: "flex", gap: 6, marginBottom: 24 }}>
+              {TUTORIAL_STEPS.map((step, i) => (
+                <button key={step.eyebrow} onClick={() => setOnboardStep(i)} aria-label={`Ir para capítulo ${i + 1}: ${step.title}`} style={{ flex: 1, height: 5, minWidth: 16, padding: 0, border: 0, borderRadius: 99, cursor: "pointer", background: i <= onboardStep ? step.accent : "#22304d" }} />
+              ))}
+            </div>
+
+            {TUTORIAL_STEPS.map((step, i) => i === onboardStep && (
+              <div key={step.eyebrow}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 20 }}>
+                  <div style={{ width: 52, height: 52, flexShrink: 0, display: "grid", placeItems: "center", borderRadius: 8, background: `${step.accent}14`, border: `1px solid ${step.accent}55`, color: step.accent, fontFamily: FONT, fontWeight: 700, fontSize: 17 }}>{step.icon}</div>
+                  <div>
+                    <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 10, letterSpacing: 1.8, color: step.accent, marginBottom: 5 }}>{step.eyebrow}</div>
+                    <h2 id="tutorial-title" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 24, color: "#fff", margin: 0, letterSpacing: 0 }}>{step.title}</h2>
+                    <p style={{ fontSize: 14, color: "#9FB0C8", lineHeight: 1.6, margin: "7px 0 0" }}>{step.text}</p>
+                  </div>
+                </div>
+
+                <div className="tutorial-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+                  {step.items.map(([mark, title, description]) => (
+                    <div key={title} style={{ minWidth: 0, background: "#090F22", border: "1px solid #1B2946", borderRadius: 8, padding: "14px 13px" }}>
+                      <div style={{ width: 34, height: 26, display: "grid", placeItems: "center", borderRadius: 6, background: `${step.accent}16`, color: step.accent, fontFamily: FONT, fontWeight: 700, fontSize: 11, marginBottom: 10 }}>{mark}</div>
+                      <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, color: "#E7EEF8", marginBottom: 5 }}>{title}</div>
+                      <div style={{ fontSize: 12, color: "#7F93B2", lineHeight: 1.5 }}>{description}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ marginTop: 12, padding: "10px 12px", background: `${step.accent}0D`, borderLeft: `3px solid ${step.accent}`, color: "#AEBED3", fontSize: 12.5, lineHeight: 1.5 }}>
+                  <b style={{ color: step.accent }}>DICA:</b> {step.tip}
+                </div>
               </div>
             ))}
-            <div style={{ display: "flex", gap: 6, justifyContent: "center", margin: "20px 0" }}>
-              {[0, 1, 2, 3].map((i) => <span key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: i === onboardStep ? "#1BF5A3" : "#22304d" }} />)}
-            </div>
-            <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-              {onboardStep < 3 ? (
-                <>
-                  <button onClick={() => setOnboardStep(onboardStep + 1)} style={btn(true)}>Seguinte</button>
-                  <button onClick={finishOnboard} style={btn(false)}>Saltar</button>
-                </>
-              ) : !twitchLogin ? (
-                <>
-                  <button onClick={() => { finishOnboard(); linkTwitch(); }} style={btn(true)}>Ligar conta Twitch</button>
-                  <button onClick={finishOnboard} style={btn(false)}>Mais tarde</button>
-                </>
-              ) : (
-                <button onClick={finishOnboard} style={btn(true)}>Começar a colecionar!</button>
-              )}
+
+            <div className="tutorial-footer" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginTop: 22, paddingTop: 18, borderTop: "1px solid #1B2946" }}>
+              <button onClick={() => leaveTutorialFor(TUTORIAL_STEPS[onboardStep].actionTab)} style={{ ...btn(false), fontSize: 11, padding: "10px 14px" }}>{TUTORIAL_STEPS[onboardStep].actionLabel} ↗</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                {onboardStep > 0 && <button onClick={() => setOnboardStep(onboardStep - 1)} style={{ ...btn(false), color: "#9FB0C8", borderColor: "#334461" }}>Anterior</button>}
+                {onboardStep < TUTORIAL_STEPS.length - 1
+                  ? <button onClick={() => setOnboardStep(onboardStep + 1)} style={btn(true)}>Seguinte</button>
+                  : <button onClick={finishOnboard} style={btn(true)}>Entrar no jogo</button>}
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 70, background: "#0E162E", border: "1px solid #1BF5A366", borderRadius: 99, padding: "10px 22px", fontFamily: FONT, fontSize: 13, color: "#1BF5A3", boxShadow: "0 10px 30px rgba(0,0,0,0.5)", animation: "popcenter 250ms ease-out", maxWidth: "90vw", textAlign: "center" }}>{toast}</div>
+        <div role="status" aria-live="polite" style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 70, background: "#0E162E", border: "1px solid #1BF5A366", borderRadius: 99, padding: "10px 22px", fontFamily: FONT, fontSize: 13, color: "#1BF5A3", boxShadow: "0 10px 30px rgba(0,0,0,0.5)", animation: "popcenter 250ms ease-out", maxWidth: "90vw", textAlign: "center" }}>{toast}</div>
       )}
 
       <footer style={{ textAlign: "center", padding: "20px 0 30px", fontSize: 11, color: "#44557a" }}>
-        Protótipo · Cartas da época 25/26 como placeholder até ao arranque da nova época · eLiga Portugal
+        eLiga Portugal · Cartas colecionáveis
       </footer>
     </>
   );

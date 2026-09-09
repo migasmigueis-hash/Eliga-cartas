@@ -111,6 +111,8 @@ Deno.serve(async (req: Request) => {
     const lineup = sub.lineup as string[], captain = sub.captain as number;
     const cards = lineup.map((id) => JORNADA_CARDS.find((c) => c.id === id));
     if (cards.some((c) => !c)) { skipped++; continue; }
+    const collection = (state.collection as Record<string, number>) ?? {};
+    if (lineup.some((id) => !(collection[id] > 0))) { skipped++; continue; }
 
     const rows = lineup.map((id, i) => { const r = scoreRealCard(id, allMatches); r.captain = i === captain; return r; });
     const total = applyEffectsAndTotal(rows, isElim);

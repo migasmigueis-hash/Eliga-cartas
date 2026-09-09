@@ -7,7 +7,7 @@
 //
 // Mantém isto em sincronia com buildObjectives() em src/App.jsx.
 
-import { CARD_POOL } from "./cardpool.ts";
+import { CARD_POOL, type CardRef } from "./cardpool.ts";
 import { JORNADA_TEAMS } from "./jornadaTeams.ts";
 
 export function todayStr(): string {
@@ -44,7 +44,7 @@ export interface ObjectiveResult {
 }
 
 // recalcula o objetivo "id" a partir do estado guardado; null se "id" for desconhecido
-export function computeObjective(id: string, meta: Record<string, unknown>, collection: Record<string, number>): ObjectiveResult | null {
+export function computeObjective(id: string, meta: Record<string, unknown>, collection: Record<string, number>, cardPool: CardRef[] = CARD_POOL): ObjectiveResult | null {
   const today = todayStr();
   const wk = weekKey(new Date(today + "T12:00:00"));
 
@@ -64,22 +64,29 @@ export function computeObjective(id: string, meta: Record<string, unknown>, coll
   const streak = streakOf(dias);
   const inWeek = dias.filter((d) => weekKey(new Date(d + "T12:00:00")) === wk).length;
   const totalPacks = Object.values(packs).reduce((s, n) => s + n, 0);
-  const temLendaria = CARD_POOL.some((c) => c.rarity === "lendaria" && (collection[c.id] || 0) > 0);
-  const totalOwned = Object.keys(collection).filter((k) => (collection[k] || 0) > 0).length;
+  const totalTrocas = Object.values(trocas).reduce((s, n) => s + n, 0);
+  const totalEsc = Object.values(escUso).reduce((s, n) => s + n, 0);
+  const temLendaria = cardPool.some((c) => c.rarity === "lendaria" && (collection[c.id] || 0) > 0);
+  const baseCardIds = new Set(CARD_POOL.filter((card) => !card.edition).map((card) => card.id));
+  const totalOwned = Object.entries(collection).filter(([id, amount]) => baseCardIds.has(id) && amount > 0).length;
 
   switch (id) {
     case "d-login": return { tipo: "diario", periodo: today, prog: dias.includes(today) ? 1 : 0, alvo: 1, reward: "base" };
     case "d-packs3": return { tipo: "diario", periodo: today, prog: Math.min(3, packsToday), alvo: 3, reward: "base" };
     case "d-escolha1": return { tipo: "diario", periodo: today, prog: Math.min(1, escDia), alvo: 1, reward: "base" };
-    case "d-packs5": return { tipo: "diario", periodo: today, prog: Math.min(5, packsToday), alvo: 5, reward: "base" };
     case "s-login5": return { tipo: "semanal", periodo: wk, prog: Math.min(5, inWeek), alvo: 5, reward: "escolha2" };
     case "s-packs10": return { tipo: "semanal", periodo: wk, prog: Math.min(10, packsWeek), alvo: 10, reward: "escolha2" };
     case "s-trocas3": return { tipo: "semanal", periodo: wk, prog: Math.min(3, trocasWeek), alvo: 3, reward: "finals" };
     case "s-esc5": return { tipo: "semanal", periodo: wk, prog: Math.min(5, escWeek), alvo: 5, reward: "finals" };
     case "p-streak7": return { tipo: "permanente", periodo: "perm", prog: Math.min(7, streak), alvo: 7, reward: "finals" };
     case "p-streak14": return { tipo: "permanente", periodo: "perm", prog: Math.min(14, streak), alvo: 14, reward: "escolha3" };
+    case "p-packs10": return { tipo: "permanente", periodo: "perm", prog: Math.min(10, totalPacks), alvo: 10, reward: "escolha1" };
     case "p-packs50": return { tipo: "permanente", periodo: "perm", prog: Math.min(50, totalPacks), alvo: 50, reward: "finals" };
     case "p-packs100": return { tipo: "permanente", periodo: "perm", prog: Math.min(100, totalPacks), alvo: 100, reward: "finals" };
+    case "p-trade1": return { tipo: "permanente", periodo: "perm", prog: Math.min(1, totalTrocas), alvo: 1, reward: "escolha1" };
+    case "p-trades10": return { tipo: "permanente", periodo: "perm", prog: Math.min(10, totalTrocas), alvo: 10, reward: "finals" };
+    case "p-esc10": return { tipo: "permanente", periodo: "perm", prog: Math.min(10, totalEsc), alvo: 10, reward: "escolha2" };
+    case "p-esc25": return { tipo: "permanente", periodo: "perm", prog: Math.min(25, totalEsc), alvo: 25, reward: "finals" };
     case "p-lendaria": return { tipo: "permanente", periodo: "perm", prog: temLendaria ? 1 : 0, alvo: 1, reward: "finals" };
     case "p-col15": return { tipo: "permanente", periodo: "perm", prog: Math.min(15, totalOwned), alvo: 15, reward: "escolha1" };
     case "p-col30": return { tipo: "permanente", periodo: "perm", prog: Math.min(30, totalOwned), alvo: 30, reward: "escolha2" };
@@ -101,11 +108,11 @@ export type ObjectiveClaimResult = { ok: true; reward: string } | { ok: false; e
 
 // confirma que o objetivo "id" está cumprido AGORA para o "periodo" indicado,
 // e que ainda não foi reclamado nesse período
-export function validateObjectiveClaim(id: unknown, periodo: unknown, meta: Record<string, unknown>, collection: Record<string, number>): ObjectiveClaimResult {
+export function validateObjectiveClaim(id: unknown, periodo: unknown, meta: Record<string, unknown>, collection: Record<string, number>, cardPool: CardRef[] = CARD_POOL): ObjectiveClaimResult {
   if (typeof id !== "string" || typeof periodo !== "string" || periodo.length > 20) {
     return { ok: false, error: "Pedido inválido." };
   }
-  const obj = computeObjective(id, meta, collection);
+  const obj = computeObjective(id, meta, collection, cardPool);
   if (!obj) return { ok: false, error: "Objetivo desconhecido." };
   if (periodo !== obj.periodo) return { ok: false, error: "Este objetivo já não está disponível para este período." };
   if (obj.prog < obj.alvo) return { ok: false, error: "Ainda não cumpriste este objetivo." };

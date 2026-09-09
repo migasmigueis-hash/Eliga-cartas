@@ -1,4 +1,8 @@
-# eLiga Cartas — pacote completo (back-end)
+# eLiga Cartas — arquivo histórico
+
+> Não fazer deploy a partir desta pasta. As versões atuais estão em
+> `../../supabase/functions/`; este diretório existe apenas para consulta do
+> pacote de correções original.
 
 ## Para a última funcionalidade (prazos + recompensas) precisas de:
 - redeployar 4 funções: `admin-liga-config`, `previsoes-simular-grupos`,

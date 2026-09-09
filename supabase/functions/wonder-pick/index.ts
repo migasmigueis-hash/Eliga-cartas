@@ -19,6 +19,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
 import { PICK_SLOT_MS, buildPickBoard, todayStr } from "../_shared/gameData.ts";
 import type { CardRef } from "../_shared/cardpool.ts";
+import { configuredCardPool } from "../_shared/configuredCardPool.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
@@ -37,20 +38,6 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "Pedido inválido." }, 400);
   }
 
-  // recalcula o tabuleiro do slot atual (6h) — o servidor é quem decide qual é
-  const pickSlotNow = Math.floor(Date.now() / PICK_SLOT_MS);
-  const base = String(pickSlotNow);
-
-  let board: CardRef[] | null = null;
-  let cost = 1;
-  if (key === base + "-0") board = buildPickBoard(pickSlotNow);
-  else if (key === base + "-1") board = buildPickBoard(pickSlotNow + 7919);
-  else if (key === base + "-2") board = buildPickBoard(pickSlotNow + 2 * 7919);
-  else if (key === base + "-p") { board = buildPickBoard(pickSlotNow + 777777, true); cost = 3; }
-
-  if (!board) return jsonResponse({ error: "Tabuleiro desatualizado. Atualiza a página e tenta de novo." }, 400);
-  if (!board.some((c) => c.id === cardId)) return jsonResponse({ error: "Carta inválida para este tabuleiro." }, 400);
-
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
   const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
   const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -63,6 +50,23 @@ Deno.serve(async (req: Request) => {
   if (userErr || !userData?.user) return jsonResponse({ error: "Não autenticado." }, 401);
   const userId = userData.user.id;
 
+  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+  const { data: configRow } = await admin.from("liga_data").select("data").eq("key", "config").single();
+  const cardPool = configuredCardPool((configRow?.data ?? {}) as Record<string, unknown>);
+
+  // recalcula o tabuleiro do slot atual (6h) com o mesmo catálogo do cliente
+  const pickSlotNow = Math.floor(Date.now() / PICK_SLOT_MS);
+  const base = String(pickSlotNow);
+  let board: CardRef[] | null = null;
+  let cost = 1;
+  if (key === base + "-0") board = buildPickBoard(pickSlotNow, false, cardPool);
+  else if (key === base + "-1") board = buildPickBoard(pickSlotNow + 7919, false, cardPool);
+  else if (key === base + "-2") board = buildPickBoard(pickSlotNow + 2 * 7919, false, cardPool);
+  else if (key === base + "-p") { board = buildPickBoard(pickSlotNow + 777777, true, cardPool); cost = 3; }
+
+  if (!board) return jsonResponse({ error: "Tabuleiro desatualizado. Atualiza a página e tenta de novo." }, 400);
+  if (!board.some((c) => c.id === cardId)) return jsonResponse({ error: "Carta inválida para este tabuleiro." }, 400);
+
   // ---- passo atómico: debita Escolhas + marca o tabuleiro como usado ----
   // (corre como o próprio utilizador, security definer — impede corridas)
   const { data: stateAfterReserve, error: reserveErr } = await userClient.rpc("apply_wonder_pick", { p_key: key, p_cost: cost });
@@ -72,8 +76,6 @@ Deno.serve(async (req: Request) => {
       : reserveErr.message || "Não foi possível usar esta Escolha.";
     return jsonResponse({ error: msg }, 400);
   }
-
-  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
   // ---- aplica a carta/coleção/histórico a partir do estado já atualizado ----
   const state = (stateAfterReserve ?? {}) as Record<string, unknown>;
@@ -92,11 +94,19 @@ Deno.serve(async (req: Request) => {
 
   const newState = { ...state, collection, meta, hist: histTrimmed };
 
-  const { error: updErr } = await admin
+  const { data: updatedProfile, error: updErr } = await admin
     .from("profiles")
     .update({ state: newState, updated_at: new Date().toISOString() })
-    .eq("id", userId);
-  if (updErr) return jsonResponse({ error: updErr.message }, 500);
+    .eq("id", userId)
+    .eq("state", JSON.stringify(state))
+    .select("id")
+    .maybeSingle();
+  if (updErr || !updatedProfile) {
+    const { error: rollbackErr } = await admin.rpc("rollback_wonder_pick", { p_user_id: userId, p_key: key, p_cost: cost });
+    if (rollbackErr) return jsonResponse({ error: "A carta não foi entregue e não foi possível devolver a Escolha automaticamente. Contacta o suporte." }, 500);
+    if (updErr) return jsonResponse({ error: updErr.message }, 500);
+    return jsonResponse({ error: "O teu progresso mudou entretanto. A Escolha foi devolvida; tenta novamente." }, 409);
+  }
 
   return jsonResponse({
     escolhas: state.escolhas as number,

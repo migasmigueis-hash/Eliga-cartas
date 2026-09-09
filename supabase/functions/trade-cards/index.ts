@@ -11,7 +11,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
 import {
-  CARD_POOL,
   RARITY_UP,
   RARITY_LABEL,
   TRADE_COST,
@@ -22,6 +21,7 @@ import {
   todayStr,
 } from "../_shared/gameData.ts";
 import type { Rarity } from "../_shared/cardpool.ts";
+import { configuredCardPool } from "../_shared/configuredCardPool.ts";
 
 const TRADABLE: Rarity[] = ["comum", "rara", "epica"];
 
@@ -54,12 +54,13 @@ Deno.serve(async (req: Request) => {
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-  const { data: profile, error: profErr } = await admin
-    .from("profiles")
-    .select("state")
-    .eq("id", userId)
-    .single();
+  const [profileResult, configResult] = await Promise.all([
+    admin.from("profiles").select("state").eq("id", userId).single(),
+    admin.from("liga_data").select("data").eq("key", "config").single(),
+  ]);
+  const { data: profile, error: profErr } = profileResult;
   if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
+  const cardPool = configuredCardPool((configResult.data?.data ?? {}) as Record<string, unknown>);
 
   const state = (profile.state ?? {}) as Record<string, unknown>;
   const collection: Record<string, number> = { ...((state.collection as Record<string, number>) ?? {}) };
@@ -70,14 +71,14 @@ Deno.serve(async (req: Request) => {
   let rewardId: string;
 
   if (body.mode === "rand") {
-    if (duplicatesOf(rarity, collection) < TRADE_COST) {
+    if (duplicatesOf(rarity, collection, cardPool) < TRADE_COST) {
       return jsonResponse({ error: "Não tens duplicados suficientes para esta troca." }, 400);
     }
-    const picks = pickDuplicates(rarity, collection, TRADE_COST);
+    const picks = pickDuplicates(rarity, collection, TRADE_COST, cardPool);
     Object.entries(picks).forEach(([id, n]) => {
       collection[id] = Math.max(1, (collection[id] || 0) - n);
     });
-    const reward = randomOfRarity(RARITY_UP[rarity], Math.random() < 0.5);
+    const reward = randomOfRarity(RARITY_UP[rarity], Math.random() < 0.5, cardPool);
     rewardId = reward.id;
     collection[rewardId] = (collection[rewardId] || 0) + 1;
     hist.unshift({
@@ -87,15 +88,15 @@ Deno.serve(async (req: Request) => {
     });
   } else {
     const targetId = body.targetId;
-    const target = CARD_POOL.find((c) => c.id === targetId);
+    const target = cardPool.find((c) => c.id === targetId);
     if (!target || target.rarity !== RARITY_UP[rarity]) {
       return jsonResponse({ error: "Carta de destino inválida." }, 400);
     }
-    if (duplicatesOf(rarity, collection) < TRADE_DIRECT) {
+    if (duplicatesOf(rarity, collection, cardPool) < TRADE_DIRECT) {
       return jsonResponse({ error: "Não tens duplicados suficientes para esta troca." }, 400);
     }
     let need = TRADE_DIRECT;
-    for (const c of CARD_POOL.filter((x) => x.rarity === rarity)) {
+    for (const c of cardPool.filter((x) => x.rarity === rarity)) {
       if (need <= 0) break;
       const spare = (collection[c.id] || 0) - 1;
       if (spare > 0) {
@@ -121,11 +122,15 @@ Deno.serve(async (req: Request) => {
 
   const newState = { ...state, collection, meta, hist: histTrimmed };
 
-  const { error: updErr } = await admin
+  const { data: updatedProfile, error: updErr } = await admin
     .from("profiles")
     .update({ state: newState, updated_at: new Date().toISOString() })
-    .eq("id", userId);
+    .eq("id", userId)
+    .eq("state", JSON.stringify(state))
+    .select("id")
+    .maybeSingle();
   if (updErr) return jsonResponse({ error: updErr.message }, 500);
+  if (!updatedProfile) return jsonResponse({ error: "O teu progresso mudou entretanto. Atualiza e tenta novamente." }, 409);
 
   return jsonResponse({ cardId: rewardId, collection, meta, hist: histTrimmed });
 });

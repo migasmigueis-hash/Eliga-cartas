@@ -4,6 +4,9 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
+import { CARD_POOL } from "../_shared/cardpool.ts";
+
+const RESERVED_BATCH_IDS = new Set(["base", "finals-2526", "taca-2526", "etapa1-2526", "etapa2-2526", "etapa3-2526", "grande-final-2526"]);
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
@@ -80,11 +83,16 @@ Deno.serve(async (req: Request) => {
     if (body.customBatches.length > 20) return jsonResponse({ error: "Máximo de 20 batches." }, 400);
     const allowedRarities = ["comum", "rara", "epica", "lendaria"];
     const allowedEffects = ["artilheiro", "vencedor", "consistente", "imparavel", "resiliente", "cacagrandes", "clube", "mentor", "fortaleza", "hype", "vozdaliga", "analista"];
+    const batchIds = new Set<string>();
+    const cardIds = new Set(CARD_POOL.map((card) => card.id));
     let totalCards = 0;
     for (const rawBatch of body.customBatches) {
       if (!rawBatch || typeof rawBatch !== "object" || Array.isArray(rawBatch)) return jsonResponse({ error: "Batch inválido." }, 400);
       const batch = rawBatch as Record<string, unknown>;
       if (typeof batch.id !== "string" || !/^[a-z0-9-]{1,100}$/.test(batch.id)) return jsonResponse({ error: "ID de batch inválido." }, 400);
+      if (RESERVED_BATCH_IDS.has(batch.id)) return jsonResponse({ error: "O ID desta edição está reservado." }, 400);
+      if (batchIds.has(batch.id)) return jsonResponse({ error: "Existem edições com o mesmo ID." }, 400);
+      batchIds.add(batch.id);
       if (typeof batch.name !== "string" || !batch.name.trim() || batch.name.length > 100) return jsonResponse({ error: "Nome de batch inválido." }, 400);
       if (typeof batch.description !== "string" || batch.description.length > 220) return jsonResponse({ error: "Descrição de batch inválida." }, 400);
       if (!['draft', 'published'].includes(batch.status as string)) return jsonResponse({ error: "Estado de batch inválido." }, 400);
@@ -95,6 +103,8 @@ Deno.serve(async (req: Request) => {
         const card = rawCard as Record<string, unknown>;
         const effect = card.customEffect as Record<string, unknown> | undefined;
         if (typeof card.id !== "string" || !/^[a-z0-9-]{1,100}$/.test(card.id)) return jsonResponse({ error: "ID de carta inválido." }, 400);
+        if (cardIds.has(card.id)) return jsonResponse({ error: "Existem cartas com o mesmo ID." }, 400);
+        cardIds.add(card.id);
         if (typeof card.name !== "string" || !card.name.trim() || card.name.length > 80) return jsonResponse({ error: "Nome de carta inválido." }, 400);
         if (!allowedRarities.includes(card.rarity as string)) return jsonResponse({ error: "Raridade inválida." }, 400);
         if (!Number.isFinite(card.ovr) || Number(card.ovr) < 1 || Number(card.ovr) > 99) return jsonResponse({ error: "Rating inválido." }, 400);

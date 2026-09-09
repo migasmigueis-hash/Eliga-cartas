@@ -20,18 +20,18 @@ export const TRADE_COST = 10; // duplicados -> 1 carta aleatória da raridade ac
 export const TRADE_DIRECT = 25; // duplicados -> escolher a carta exata da raridade acima
 
 // nº de duplicados (cópias além da 1ª) de uma raridade
-export function duplicatesOf(rarity: Rarity, collection: Record<string, number>): number {
-  return CARD_POOL.filter((c) => c.rarity === rarity).reduce((s, c) => s + Math.max(0, (collection[c.id] || 0) - 1), 0);
+export function duplicatesOf(rarity: Rarity, collection: Record<string, number>, cardPool: CardRef[] = CARD_POOL): number {
+  return cardPool.filter((c) => c.rarity === rarity).reduce((s, c) => s + Math.max(0, (collection[c.id] || 0) - 1), 0);
 }
 
 // escolhe quais duplicados consumir (mesma lógica que existia no cliente):
 // vai sempre à carta com mais cópias primeiro
-export function pickDuplicates(rarity: Rarity, collection: Record<string, number>, n: number): Record<string, number> {
+export function pickDuplicates(rarity: Rarity, collection: Record<string, number>, n: number, cardPool: CardRef[] = CARD_POOL): Record<string, number> {
   const picks: Record<string, number> = {};
   const temp = { ...collection };
   let remaining = n;
   while (remaining > 0) {
-    const candidates = CARD_POOL
+    const candidates = cardPool
       .filter((c) => c.rarity === rarity && (temp[c.id] || 0) > 1)
       .sort((a, b) => (temp[b.id] || 0) - (temp[a.id] || 0));
     if (!candidates.length) break;
@@ -81,8 +81,8 @@ export function rollRarity(boost: 0 | 1): Rarity {
   return "comum";
 }
 
-export function randomOfRarity(rarity: Rarity, preferSpecial: boolean): CardRef {
-  let candidates = CARD_POOL.filter((c) => c.rarity === rarity);
+export function randomOfRarity(rarity: Rarity, preferSpecial: boolean, cardPool: CardRef[] = CARD_POOL): CardRef {
+  let candidates = cardPool.filter((c) => c.rarity === rarity);
   if (preferSpecial && (rarity === "epica" || rarity === "lendaria")) {
     const specials = candidates.filter((c) => c.edition);
     if (specials.length && Math.random() < 0.65) candidates = specials;
@@ -135,7 +135,7 @@ function mulberry32(a: number) {
   };
 }
 
-export function buildPickBoard(seed: number, premium = false): CardRef[] {
+export function buildPickBoard(seed: number, premium = false, cardPool: CardRef[] = CARD_POOL): CardRef[] {
   const rnd = mulberry32(seed);
   const pickRar = (): Rarity => {
     const r = rnd() * 100;
@@ -147,7 +147,7 @@ export function buildPickBoard(seed: number, premium = false): CardRef[] {
   const used = new Set<string>();
   let guard = 0;
   while (board.length < 5 && guard++ < 300) {
-    const cands = CARD_POOL.filter((c) => c.rarity === pickRar() && !used.has(c.id));
+    const cands = cardPool.filter((c) => c.rarity === pickRar() && !used.has(c.id));
     if (!cands.length) continue;
     const c = cands[Math.floor(rnd() * cands.length)];
     used.add(c.id);

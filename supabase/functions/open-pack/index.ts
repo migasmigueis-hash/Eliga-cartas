@@ -24,6 +24,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
 import { PACKS, applyPackOpening, todayStr, type CardRef, type PackDef } from "../_shared/gameData.ts";
 import { validateObjectiveClaim } from "../_shared/objectives.ts";
+import { configuredCardPool, publishedCardBatches } from "../_shared/configuredCardPool.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
@@ -58,29 +59,24 @@ Deno.serve(async (req: Request) => {
 
   // cliente com privilégios de serviço — lê/escreve o progresso, ignorando RLS
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+  const { data: configRow } = await admin.from("liga_data").select("data").eq("key", "config").single();
+  const config = (configRow?.data ?? {}) as Record<string, unknown>;
+  const cardPool = configuredCardPool(config);
 
   let pack = PACKS.find((item) => item.id === body.packId);
   let customPool: CardRef[] | undefined;
-  if (body.packId === "etapa1") {
-    const { data: configRow } = await admin.from("liga_data").select("data").eq("key", "config").single();
-    const config = (configRow?.data ?? {}) as Record<string, unknown>;
-    const batches = Array.isArray(config.customBatches) ? config.customBatches as Array<Record<string, unknown>> : [];
-    const published = batches.find((batch) => batch.status === "published");
-    const cards = published && Array.isArray(published.cards) ? published.cards as Array<Record<string, unknown>> : [];
+  if (body.packId?.startsWith("custom:")) {
+    const publishedBatches = publishedCardBatches(config);
+    const requestedBatchId = body.packId.slice("custom:".length);
+    const published = publishedBatches.find((batch) => batch.id === requestedBatchId);
+    const cards = published?.cards || [];
     if (published && cards.length) {
-      pack = { id: "etapa1", name: published.name as string, locked: false, specialBoost: 0, twitchCost: 150 } as PackDef;
-      customPool = cards.map((card) => ({
-        id: card.id as string,
-        rarity: card.rarity as CardRef["rarity"],
-        team: typeof card.team === "string" ? card.team : null,
-        isClub: card.isClub === true,
-        isCaster: card.isCaster === true,
-        edition: typeof card.edition === "string" ? card.edition : null,
-      }));
+      pack = { id: body.packId, name: published.name, locked: false, specialBoost: 0, twitchCost: 150 } as PackDef;
+      customPool = cards;
     }
   }
   if (!pack) return jsonResponse({ error: "Pack desconhecido." }, 400);
-  if (pack.locked || !customPool && pack.id === "etapa1") return jsonResponse({ error: "Este pack ainda não está disponível." }, 400);
+  if (pack.locked || (!customPool && (pack.id === "etapa1" || pack.id.startsWith("custom:")))) return jsonResponse({ error: "Este pack ainda não está disponível." }, 400);
 
   const { data: profile, error: profErr } = await admin
     .from("profiles")
@@ -97,7 +93,7 @@ Deno.serve(async (req: Request) => {
   // servidor e confirma que este "pack" é mesmo a recompensa desse objetivo
   let claimPatch: { id: string; periodo: string } | null = null;
   if (body.claim) {
-    const result = validateObjectiveClaim(body.claim.id, body.claim.periodo, prevMeta, collectionBefore);
+    const result = validateObjectiveClaim(body.claim.id, body.claim.periodo, prevMeta, collectionBefore, cardPool);
     if (result.ok === false) return jsonResponse({ error: result.error }, 400);
     if (result.reward !== pack.id) {
       return jsonResponse({ error: "Este objetivo dá um pack diferente." }, 400);
@@ -171,17 +167,22 @@ Deno.serve(async (req: Request) => {
     newState.prev = { ...((state.prev as Record<string, unknown>) ?? {}), rewardClaimed: true };
   }
 
-  const { error: updErr } = await admin
+  const { data: updatedProfile, error: updErr } = await admin
     .from("profiles")
     .update({ state: newState, updated_at: new Date().toISOString() })
-    .eq("id", userId);
-  if (updErr) {
+    .eq("id", userId)
+    .eq("state", JSON.stringify(state))
+    .select("id")
+    .maybeSingle();
+  if (updErr || !updatedProfile) {
     // a escrita do pack falhou depois de já termos debitado pontos — repõe
-    // os pontos (melhor esforço) para não cobrar sem entregar o pack
+    // os pontos de forma aditiva para não sobrescrever movimentos concorrentes
     if (spentPoints && pack.twitchCost && newTwitchPoints !== undefined) {
-      await admin.from("profiles").update({ twitch_points: newTwitchPoints + pack.twitchCost }).eq("id", userId);
+      const { error: refundErr } = await admin.rpc("refund_twitch_points", { p_user_id: userId, p_amount: pack.twitchCost });
+      if (refundErr) return jsonResponse({ error: "O pack não foi entregue e não foi possível devolver os pontos automaticamente. Contacta o suporte." }, 500);
     }
-    return jsonResponse({ error: updErr.message }, 500);
+    if (updErr) return jsonResponse({ error: updErr.message }, 500);
+    return jsonResponse({ error: "O teu progresso mudou entretanto. Os pontos foram devolvidos; tenta novamente." }, 409);
   }
 
   return jsonResponse({ cardIds, collection, meta, hist, twitchPoints: newTwitchPoints });
