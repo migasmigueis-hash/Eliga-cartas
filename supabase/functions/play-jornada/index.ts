@@ -5,7 +5,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
-import { JORNADA_CARDS, scoreLineup, type JornadaCard, type ScoreRow, effectOf } from "../_shared/jornadaScore.ts";
+import { configuredJornadaCards, jornadaCardIdentity, scoreLineup, type JornadaCard, type ScoreRow, effectOf } from "../_shared/jornadaScore.ts";
 
 const SCORE_REAL = { vit: 20, emp: 8, der: 3, golo: 2 };
 
@@ -89,39 +89,11 @@ Deno.serve(async (req: Request) => {
     baseCardOverrides?: Record<string, Partial<JornadaCard>>;
     customBatches?: Array<{ status?: string; cards?: Array<Partial<JornadaCard> & { id: string; name: string }> }>;
   };
-  const competitionCards = JORNADA_CARDS.map((card) => ({
-    ...card,
-    ...(config.baseCardOverrides?.[card.id] || {}),
-    id: card.id,
-    edition: card.edition,
-  }));
-  const knownIds = new Set(competitionCards.map((card) => card.id));
-  for (const batch of config.customBatches || []) {
-    if (batch.status !== "published") continue;
-    for (const card of batch.cards || []) {
-      if (knownIds.has(card.id)) continue;
-      const baseIdentity = !card.isClub && !card.isCaster
-        ? JORNADA_CARDS.find((candidate) => !candidate.edition && !candidate.isClub && !candidate.isCaster && candidate.name.toLocaleLowerCase("pt-PT") === card.name.toLocaleLowerCase("pt-PT"))
-        : undefined;
-      competitionCards.push({
-        id: card.id,
-        name: card.name,
-        rarity: card.rarity || "comum",
-        team: card.team || null,
-        isClub: card.isClub === true,
-        isCaster: card.isCaster === true,
-        edition: card.edition || null,
-        ref: card.ref || baseIdentity?.ref || null,
-        casterRef: card.casterRef || null,
-        v: card.v ?? baseIdentity?.v ?? null,
-        mg: card.mg ?? baseIdentity?.mg ?? null,
-        customEffect: card.customEffect,
-      });
-      knownIds.add(card.id);
-    }
-  }
+  const competitionCards = configuredJornadaCards(config);
   const cards = (lineup as string[]).map((id) => competitionCards.find((card) => card.id === id));
   if (cards.some((card) => !card)) return jsonResponse({ error: "Carta desconhecida na equipa." }, 400);
+  const identities = cards.map((card) => jornadaCardIdentity(card!));
+  if (new Set(identities).size !== identities.length) return jsonResponse({ error: "Não podes usar duas versões da mesma carta na equipa." }, 400);
 
   if (config.modo === "real" && config.fase === "grupos") {
     const jHist = Array.isArray(state.jHist) ? state.jHist as Record<string, unknown>[] : [];

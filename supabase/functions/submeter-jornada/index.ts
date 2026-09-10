@@ -4,7 +4,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
-import { JORNADA_CARDS } from "../_shared/jornadaScore.ts";
+import { configuredJornadaCards, jornadaCardIdentity } from "../_shared/jornadaScore.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
@@ -15,8 +15,6 @@ Deno.serve(async (req: Request) => {
   const lineup = body.lineup, captain = body.captain;
   if (!Array.isArray(lineup) || lineup.length !== 3 || lineup.some((id) => typeof id !== "string")) return jsonResponse({ error: "Equipa inválida." }, 400);
   if (typeof captain !== "number" || ![0, 1, 2].includes(captain)) return jsonResponse({ error: "Capitão inválido." }, 400);
-  const cards = (lineup as string[]).map((id) => JORNADA_CARDS.find((c) => c.id === id));
-  if (cards.some((card) => !card)) return jsonResponse({ error: "Carta desconhecida." }, 400);
 
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
   const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -41,6 +39,10 @@ Deno.serve(async (req: Request) => {
   const config = (configRes.data?.data ?? { modo: "simulacao", etapa: 1, fase: "grupos", grupo: "A" }) as {
     modo: string; etapa: number | string; fase: string; grupo?: string; prazoCompGrupos?: string | null; prazoCompElim?: string | null;
   };
+  const cards = (lineup as string[]).map((id) => configuredJornadaCards(config).find((card) => card.id === id));
+  if (cards.some((card) => !card)) return jsonResponse({ error: "Carta desconhecida." }, 400);
+  const identities = cards.map((card) => jornadaCardIdentity(card!));
+  if (new Set(identities).size !== identities.length) return jsonResponse({ error: "Não podes usar duas versões da mesma carta na equipa." }, 400);
 
   if (config.modo === "real") {
     const prazoIso = config.fase === "grupos" ? config.prazoCompGrupos : config.prazoCompElim;

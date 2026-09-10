@@ -13,6 +13,53 @@ import { JORNADA_TEAMS, TEAM_RANK } from "./jornadaTeams.ts";
 
 export { JORNADA_CARDS, type JornadaCard };
 
+type JornadaConfig = {
+  baseCardOverrides?: Record<string, Partial<JornadaCard>>;
+  customBatches?: Array<{ status?: string; cards?: Array<Partial<JornadaCard> & { id: string; name: string }> }>;
+};
+
+export function configuredJornadaCards(config: JornadaConfig): JornadaCard[] {
+  const cards = JORNADA_CARDS.map((card) => ({
+    ...card,
+    ...(config.baseCardOverrides?.[card.id] || {}),
+    id: card.id,
+    edition: card.edition,
+  }));
+  const knownIds = new Set(cards.map((card) => card.id));
+  for (const batch of config.customBatches || []) {
+    if (batch.status !== "published") continue;
+    for (const card of batch.cards || []) {
+      if (knownIds.has(card.id)) continue;
+      const normalizedName = card.name.toLocaleLowerCase("pt-PT");
+      const baseIdentity = !card.isClub
+        ? JORNADA_CARDS.find((candidate) => !candidate.edition && candidate.isCaster === (card.isCaster === true) && !candidate.isClub && candidate.name.toLocaleLowerCase("pt-PT") === normalizedName)
+        : undefined;
+      cards.push({
+        id: card.id,
+        name: card.name,
+        rarity: card.rarity || "comum",
+        team: card.team || null,
+        isClub: card.isClub === true,
+        isCaster: card.isCaster === true,
+        edition: card.edition || null,
+        ref: card.ref || baseIdentity?.ref || (baseIdentity && !baseIdentity.isCaster ? baseIdentity.id.replace("pl-", "") : null),
+        casterRef: card.casterRef || baseIdentity?.casterRef || (baseIdentity?.isCaster ? baseIdentity.id.replace("cast-", "") : null),
+        v: card.v ?? baseIdentity?.v ?? null,
+        mg: card.mg ?? baseIdentity?.mg ?? null,
+        customEffect: card.customEffect,
+      });
+      knownIds.add(card.id);
+    }
+  }
+  return cards;
+}
+
+export const jornadaCardIdentity = (card: JornadaCard) => {
+  if (card.isClub) return `club-${card.team}`;
+  if (card.isCaster) return `cast-${card.casterRef || card.id.replace("cast-", "")}`;
+  return `pl-${card.ref || card.id.replace("pl-", "")}`;
+};
+
 function hash(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;

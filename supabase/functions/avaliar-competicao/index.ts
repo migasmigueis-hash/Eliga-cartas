@@ -4,13 +4,13 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
-import { JORNADA_CARDS, type ScoreRow, effectOf } from "../_shared/jornadaScore.ts";
+import { configuredJornadaCards, jornadaCardIdentity, type JornadaCard, type ScoreRow, effectOf } from "../_shared/jornadaScore.ts";
 
 const SCORE_REAL = { vit: 20, emp: 8, der: 3, golo: 2 };
 interface RealMatch { teamA: string; playerA: string; golosA: number; teamB: string; playerB: string; golosB: number; }
 
-function scoreRealCard(cardId: string, allMatches: RealMatch[]): ScoreRow {
-  const card = JORNADA_CARDS.find((c) => c.id === cardId)!;
+function scoreRealCard(cardId: string, allMatches: RealMatch[], cardPool: JornadaCard[]): ScoreRow {
+  const card = cardPool.find((c) => c.id === cardId)!;
   if (card.isCaster) return { cardId, captain: false, synergy: 0, perf: { vit: 0, emp: 0, der: 0, golos: 0, jogos: 0, games: [] }, base: 0, bonus: 0, fx: effectOf(card), subtotal: 0 };
   const lookupId = card.isClub ? card.team : ((card as unknown as { ref?: string }).ref ? `pl-${(card as unknown as { ref: string }).ref}` : cardId);
   const myMatches = card.isClub ? allMatches.filter((m) => m.teamA === lookupId || m.teamB === lookupId) : allMatches.filter((m) => m.playerA === lookupId || m.playerB === lookupId);
@@ -29,7 +29,7 @@ function scoreRealCard(cardId: string, allMatches: RealMatch[]): ScoreRow {
   return { cardId, captain: false, synergy: 0, perf: { vit, emp, der, golos, jogos: games.length, games }, base, bonus: 0, fx: effectOf(card), subtotal: base };
 }
 
-function applyEffectsAndTotal(rows: ScoreRow[], isElim: boolean): number {
+function applyEffectsAndTotal(rows: ScoreRow[], isElim: boolean, cardPool: JornadaCard[]): number {
   for (const r of rows) {
     const fx = r.fx;
     if (fx.tipo === "artilheiro") r.bonus = r.perf.golos * fx.mag;
@@ -42,8 +42,8 @@ function applyEffectsAndTotal(rows: ScoreRow[], isElim: boolean): number {
     r.subtotal = r.base + r.bonus;
   }
   for (const r of rows) {
-    const fx = r.fx, card = JORNADA_CARDS.find((c) => c.id === r.cardId)!;
-    if (fx.tipo === "clube") rows.forEach((o) => { if (o !== r && JORNADA_CARDS.find((c) => c.id === o.cardId)?.team === card.team) o.synergy += Math.round(((o.base + o.bonus) * fx.mag) / 100); });
+    const fx = r.fx, card = cardPool.find((c) => c.id === r.cardId)!;
+    if (fx.tipo === "clube") rows.forEach((o) => { if (o !== r && cardPool.find((c) => c.id === o.cardId)?.team === card.team) o.synergy += Math.round(((o.base + o.bonus) * fx.mag) / 100); });
     if (fx.tipo === "mentor") rows.forEach((o) => { if (o !== r) o.synergy += fx.mag; });
     if (fx.tipo === "fortaleza") { const ders = rows.reduce((s, o) => s + o.perf.der, 0); r.synergy += ders * fx.mag; }
     if (fx.tipo === "hype") { const cap = rows.find((o) => o.captain); if (cap && cap !== r) cap.synergy += Math.round(((cap.base + cap.bonus) * fx.mag) / 100); }
@@ -70,7 +70,8 @@ Deno.serve(async (req: Request) => {
   if (!adminProfile?.is_admin) return jsonResponse({ error: "Sem permissão." }, 403);
 
   const { data: configRow } = await admin.from("liga_data").select("data").eq("key", "config").single();
-  const config = (configRow?.data ?? { etapa: 1, fase: "grupos", grupo: "A" }) as { etapa: number | string; fase: string; grupo?: string };
+  const config = (configRow?.data ?? { etapa: 1, fase: "grupos", grupo: "A" }) as { etapa: number | string; fase: string; grupo?: string; baseCardOverrides?: Record<string, Partial<JornadaCard>>; customBatches?: Array<{ status?: string; cards?: Array<Partial<JornadaCard> & { id: string; name: string }> }> };
+  const competitionCards = configuredJornadaCards(config);
   const etapaKey = config.etapa === "finals" ? "finals" : `etapa${config.etapa}`;
   const etapaLabel = config.etapa === "finals" ? "Finals" : `Etapa ${config.etapa}`;
   const isElim = config.fase !== "grupos";
@@ -103,13 +104,15 @@ Deno.serve(async (req: Request) => {
     const matchFase = String(sub.etapa) === String(config.etapa) && (isElim ? sub.fase !== "grupos" : (sub.fase === "grupos" && (sub.grupo || "A") === (config.grupo || "A")));
     if (!matchFase) { skipped++; continue; }
     const lineup = sub.lineup as string[], captain = sub.captain as number;
-    const cards = lineup.map((id) => JORNADA_CARDS.find((c) => c.id === id));
+    const cards = lineup.map((id) => competitionCards.find((c) => c.id === id));
     if (cards.some((c) => !c)) { skipped++; continue; }
+    const identities = cards.map((card) => jornadaCardIdentity(card!));
+    if (new Set(identities).size !== identities.length) { skipped++; continue; }
     const collection = (state.collection as Record<string, number>) ?? {};
     if (lineup.some((id) => !(collection[id] > 0))) { skipped++; continue; }
 
-    const rows = lineup.map((id, i) => { const r = scoreRealCard(id, allMatches); r.captain = i === captain; return r; });
-    const total = applyEffectsAndTotal(rows, isElim);
+    const rows = lineup.map((id, i) => { const r = scoreRealCard(id, allMatches, competitionCards); r.captain = i === captain; return r; });
+    const total = applyEffectsAndTotal(rows, isElim, competitionCards);
 
     const jHist = Array.isArray(state.jHist) ? [...(state.jHist as unknown[])] : [];
     const capCard = cards[captain]!;
