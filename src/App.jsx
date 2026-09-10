@@ -530,16 +530,16 @@ function playFx(kind, muted) {
       tone(990, 0.22, 0.34, "triangle", 0.05, 1320);
     }
     if (kind === "tearTick") {
-      noise(0, 0.075, 0.04, "bandpass", 1050);
-      noise(0.014, 0.05, 0.02, "lowpass", 2300);
-      tone(105, 0, 0.055, "sine", 0.018, 82);
+      noise(0, 0.085, 0.038, "lowpass", 1150);
+      noise(0.012, 0.06, 0.018, "bandpass", 520);
     }
     if (kind === "tear") {
-      noise(0, 0.34, 0.15, "bandpass", 1700);
-      noise(0.025, 0.24, 0.085, "highpass", 3800);
-      [0.04, 0.1, 0.17, 0.24].forEach((start, index) => noise(start, 0.04, 0.045 - index * 0.006, "highpass", 5200 - index * 600));
-      tone(115, 0.18, 0.24, "sine", 0.07, 72);
+      noise(0, 0.38, 0.13, "lowpass", 1250);
+      noise(0.02, 0.3, 0.055, "bandpass", 620);
+      [0.06, 0.15, 0.24].forEach((start, index) => noise(start, 0.065, 0.03 - index * 0.005, "lowpass", 950 - index * 120));
+      tone(92, 0.2, 0.25, "sine", 0.05, 65);
     }
+    if (kind === "packReady") { noise(0, 0.18, 0.035, "lowpass", 700); tone(180, 0, 0.24, "sine", 0.045, 240); tone(88, 0, 0.28, "sine", 0.03, 68); }
     if (kind === "flip") { noise(0, 0.1, 0.045, "highpass", 1800); tone(420, 0, 0.09, "sine", 0.07, 760); }
     if (kind === "ready") { tone(330, 0, 0.12, "sine", 0.06, 440); tone(660, 0.1, 0.3, "triangle", 0.09, 880); }
     if (kind === "comum") { tone(392, 0, 0.15, "sine", 0.09); tone(523, 0.08, 0.2, "sine", 0.07); }
@@ -1315,10 +1315,16 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
 
   const tear = () => {
     playFx("tear", muted); buzz(25); setPhase("torn");
-    phaseTimer.current = setTimeout(() => { setPhase("reveal"); playFx("ready", muted); }, motionReduced ? 0 : 900);
+    if (motionReduced) {
+      setPhase("reveal");
+      phaseTimer.current = setTimeout(() => playFx("packReady", muted), 450);
+    } else {
+      phaseTimer.current = setTimeout(() => { setPhase("reveal"); playFx("packReady", muted); }, 900);
+    }
   };
   const flip = () => {
     if (revealing || advancing) return;
+    clearTimeout(phaseTimer.current);
     if (flipped) {
       playFx("flip", muted);
       setAdvancing(true);
