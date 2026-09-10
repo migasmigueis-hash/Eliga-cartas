@@ -1837,6 +1837,9 @@ function App() {
   const [vitrinePick, setVitrinePick] = useState(null);
   const [directTrade, setDirectTrade] = useState(null);
   const [directTradeConfirm, setDirectTradeConfirm] = useState(null);
+  const [tradeChecking, setTradeChecking] = useState(false);
+  const tradeCheckingRef = useRef(false);
+  const tradeRequestGeneration = useRef(0);
   const directTradeDialogRef = useRef(null);
   const directTradeReturnId = useRef(null);
   useEffect(() => {
@@ -2044,8 +2047,10 @@ function App() {
   };
 
   const logout = async () => {
+    tradeRequestGeneration.current++;
     await supabase.auth.signOut();
-    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setDirectTradeConfirm(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompEditing(false); setCompResult(null); setLastSeenCompetitionResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
+    tradeCheckingRef.current = false;
+    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setDirectTradeConfirm(null); setTradeChecking(false); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompEditing(false); setCompResult(null); setLastSeenCompetitionResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
   const addCards = (cards) => setCollection((prev) => {
@@ -2073,7 +2078,42 @@ function App() {
   };
 
   // ---- trocas ----
-  const duplicatesOf = (rarity) => POOL.filter((c) => c.rarity === rarity).reduce((s, c) => s + Math.max(0, (collection[c.id] || 0) - 1), 0);
+  const duplicatesOf = (rarity, source = collection) => POOL.filter((c) => c.rarity === rarity).reduce((s, c) => s + Math.max(0, (source[c.id] || 0) - 1), 0);
+  const refreshTradeCollection = async (generation = tradeRequestGeneration.current) => {
+    const { data: profile, error } = await supabase.from("profiles").select("state").eq("id", userId).single();
+    if (generation !== tradeRequestGeneration.current || error || !profile?.state) return null;
+    const latestCollection = profile.state.collection || {};
+    setCollection(latestCollection);
+    return latestCollection;
+  };
+  const startDirectTrade = async (rarity) => {
+    if (tradeCheckingRef.current) return;
+    const generation = tradeRequestGeneration.current;
+    tradeCheckingRef.current = true;
+    setTradeChecking(true);
+    try {
+      const latestCollection = await refreshTradeCollection(generation);
+      if (generation !== tradeRequestGeneration.current) return;
+      if (!latestCollection) {
+        setToast("Não foi possível atualizar a coleção. Tenta novamente.");
+        setTimeout(() => setToast(null), 3000);
+        return;
+      }
+      const available = duplicatesOf(rarity, latestCollection);
+      if (available < TRADE_DIRECT) {
+        setToast(`Tens ${available}/${TRADE_DIRECT} duplicados de raridade ${RARITY[rarity].label.toLowerCase()} disponíveis.`);
+        setTimeout(() => setToast(null), 3000);
+        return;
+      }
+      setDirectTradeConfirm(null);
+      setDirectTrade(rarity);
+    } finally {
+      if (generation === tradeRequestGeneration.current) {
+        tradeCheckingRef.current = false;
+        setTradeChecking(false);
+      }
+    }
+  };
   const startTrade = (rarity) => {
     if (duplicatesOf(rarity) < TRADE_COST) return;
     setTradePreview({ rarity, picks: pickDuplicates(rarity, collection, TRADE_COST) });
@@ -2396,24 +2436,52 @@ function App() {
     setMuted((currentMuted) => !currentMuted);
   };
   const directTradeGo = async (rarity, target) => {
+    if (tradeCheckingRef.current) return;
+    const generation = tradeRequestGeneration.current;
+    tradeCheckingRef.current = true;
+    setTradeChecking(true);
     setDirectTrade(null);
     setDirectTradeConfirm(null);
-    const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
-    const { data, message } = await invokeFn("trade-cards", { mode: "direct", rarity, targetId: target.id }, "Não foi possível fazer a troca. Tenta novamente.");
-    if (message) {
-      setToast(message); setTimeout(() => setToast(null), 2600);
-      return;
+    try {
+      const latestCollection = await refreshTradeCollection(generation);
+      if (generation !== tradeRequestGeneration.current) return;
+      if (!latestCollection) {
+        setToast("Não foi possível atualizar a coleção. Tenta novamente.");
+        setTimeout(() => setToast(null), 3000);
+        return;
+      }
+      const effectiveCollection = latestCollection;
+      const available = duplicatesOf(rarity, effectiveCollection);
+      if (available < TRADE_DIRECT) {
+        setToast(`A coleção foi atualizada: tens ${available}/${TRADE_DIRECT} duplicados de raridade ${RARITY[rarity].label.toLowerCase()} disponíveis.`);
+        setTimeout(() => setToast(null), 3200);
+        return;
+      }
+      const ownedBefore = new Set(Object.keys(effectiveCollection).filter((k) => effectiveCollection[k] > 0));
+      const { data, message } = await invokeFn("trade-cards", { mode: "direct", rarity, targetId: target.id }, "Não foi possível fazer a troca. Tenta novamente.");
+      if (generation !== tradeRequestGeneration.current) return;
+      if (message) {
+        await refreshTradeCollection(generation);
+        if (generation !== tradeRequestGeneration.current) return;
+        setToast(message); setTimeout(() => setToast(null), 2600);
+        return;
+      }
+      const card = POOL.find((c) => c.id === data.cardId) || target;
+      setCollection(data.collection);
+      setMeta(data.meta);
+      setHist(data.hist);
+      setOpening({
+        pack: { name: "Troca à escolha", sub: card.name, gradient: "linear-gradient(165deg,#0E2A4A,#39E6FF)", accent: "#39E6FF" },
+        cards: [card],
+        ownedBefore,
+        initialPhase: "reveal",
+      });
+    } finally {
+      if (generation === tradeRequestGeneration.current) {
+        tradeCheckingRef.current = false;
+        setTradeChecking(false);
+      }
     }
-    const card = POOL.find((c) => c.id === data.cardId) || target;
-    setCollection(data.collection);
-    setMeta(data.meta);
-    setHist(data.hist);
-    setOpening({
-      pack: { name: "Troca à escolha", sub: card.name, gradient: "linear-gradient(165deg,#0E2A4A,#39E6FF)", accent: "#39E6FF" },
-      cards: [card],
-      ownedBefore,
-      initialPhase: "reveal",
-    });
   };
 
   const answerTrivia = async (idx) => {
@@ -3109,6 +3177,7 @@ function App() {
               const cost = mode === "rand" ? TRADE_COST : TRADE_DIRECT;
               const have = duplicatesOf(rar);
               const ready = have >= cost;
+              const actionEnabled = !tradeChecking && (mode === "choose" || ready);
               return (
                 <div key={rar + mode} style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap", background: "#0E162E", border: `1px solid ${ready ? r.color + "66" : "#22304d"}`, borderRadius: 16, padding: "18px 20px", boxShadow: ready ? `0 0 24px ${r.glow}` : "none" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 210 }}>
@@ -3135,7 +3204,7 @@ function App() {
                       <div style={{ width: `${Math.min(100, (have / cost) * 100)}%`, height: "100%", background: ready ? `linear-gradient(90deg, ${r.color}, #1BF5A3)` : r.color + "88", transition: "width 400ms" }} />
                     </div>
                   </div>
-                  <button onClick={() => { if (mode === "rand") startTrade(rar); else { setDirectTradeConfirm(null); setDirectTrade(rar); } }} disabled={!ready} style={{ ...btn(ready), opacity: ready ? 1 : 0.35, cursor: ready ? "pointer" : "not-allowed" }}>{mode === "rand" ? "Trocar" : "Escolher carta"}</button>
+                  <button onClick={() => { if (mode === "rand") startTrade(rar); else startDirectTrade(rar); }} disabled={!actionEnabled} style={{ ...btn(actionEnabled), opacity: actionEnabled ? 1 : 0.35, cursor: actionEnabled ? "pointer" : "not-allowed" }}>{mode === "rand" ? "Trocar" : tradeChecking ? "A verificar…" : "Escolher carta"}</button>
                 </div>
               );
             })}
