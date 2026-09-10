@@ -2721,7 +2721,7 @@ function App() {
     setAdminCompAvaliando(false);
     if (message) { setAdminCompLog({ ok: false, error: message }); setToast(message); setTimeout(() => setToast(null), 3200); return; }
     setAdminCompLog({ ok: true, ...data });
-    setToast(`⚽ Competição avaliada: ${data.evaluated} jogador(es) pontuado(s).`); setTimeout(() => setToast(null), 4000);
+    setToast(`⚽ Competição avaliada: ${data.evaluated} jogador(es) pontuado(s).${data.conflicts ? ` ${data.conflicts} perfil(is) mudaram durante a avaliação; repete para os concluir.` : ""}`); setTimeout(() => setToast(null), 5000);
     try {
       const { data: prof } = await supabase.from("profiles").select("state").eq("id", userId).single();
       if (prof?.state) { setJHist(prof.state.jHist || []); setCompSubmit(prof.state.compSubmit || null); }
@@ -2738,9 +2738,10 @@ function App() {
       return;
     }
     setAdminAvalLog({ ok: true, ...data });
+    const conflictNote = data.conflicts ? ` ${data.conflicts} perfil(is) mudaram durante a avaliação; repete para os concluir.` : "";
     const txt = data.mode === "grupos"
-      ? `🔓 Grupos revelados: ${data.revealed} jogador(es) pontuado(s) nos apurados.`
-      : `🏆 Eliminatórias validadas: ${data.resolved} previsão(ões) pontuada(s).`;
+      ? `🔓 Grupos revelados: ${data.revealed} jogador(es) pontuado(s) nos apurados.${conflictNote}`
+      : `🏆 Eliminatórias validadas: ${data.resolved} previsão(ões) pontuada(s).${conflictNote}`;
     setToast(txt); setTimeout(() => setToast(null), 4000);
     // refrescar o próprio progresso (admin também pode ter previsão)
     try {
@@ -3873,7 +3874,7 @@ function App() {
                       const { data, message } = await invokeFn("admin-limpar-previsoes", {}, "Não foi possível limpar as previsões.");
                       if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
                       setPrevHist([]); setPrev(EMPTY_PREV);
-                      setToast(`✓ Previsões limpas para ${data?.cleared ?? 0} jogador(es).`); setTimeout(() => setToast(null), 2800);
+                      setToast(`✓ Previsões limpas para ${data?.cleared ?? 0} jogador(es).${data?.conflicts ? ` ${data.conflicts} perfil(is) mudaram; repete para os concluir.` : ""}`); setTimeout(() => setToast(null), 4000);
                     }} style={{ fontFamily: FONT, fontSize: 10, letterSpacing: 1, padding: "6px 12px", borderRadius: 99, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>↻ Limpar tabela — TODOS (admin)</button>}
                   </div>
                 </div>
@@ -4621,7 +4622,7 @@ function App() {
                   const { data, message } = await invokeFn("admin-limpar-previsoes", {}, "Não foi possível limpar as previsões.");
                   if (message) { setToast(message); setTimeout(() => setToast(null), 2800); return; }
                   setPrevHist([]); setPrev(EMPTY_PREV);
-                  setToast(`✓ Previsões limpas para ${data?.cleared ?? 0} jogador(es).`); setTimeout(() => setToast(null), 3000);
+                  setToast(`✓ Previsões limpas para ${data?.cleared ?? 0} jogador(es).${data?.conflicts ? ` ${data.conflicts} perfil(is) mudaram; repete para os concluir.` : ""}`); setTimeout(() => setToast(null), 4000);
                 }} style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, letterSpacing: 1, padding: "12px 22px", borderRadius: 10, cursor: "pointer", background: "transparent", border: "1px dashed #ff7b8a88", color: "#ff7b8a" }}>
                   ↻ Limpar previsões — TODOS
                 </button>

@@ -28,7 +28,7 @@ Deno.serve(async (req: Request) => {
   if (!adminProfile?.is_admin) return jsonResponse({ error: "Sem permissão." }, 403);
 
   const { data: profiles } = await admin.from("profiles").select("id, state");
-  let cleared = 0;
+  let cleared = 0, conflicts = 0;
 
   for (const profile of profiles ?? []) {
     const state = (profile.state ?? {}) as Record<string, unknown>;
@@ -38,9 +38,15 @@ Deno.serve(async (req: Request) => {
     if (!temPrevHist && !temPrev) continue;
 
     const newState = { ...state, prevHist: [], prev: EMPTY_PREV };
-    await admin.from("profiles").update({ state: newState, updated_at: new Date().toISOString() }).eq("id", profile.id);
+    const { data: committed, error: commitError } = await admin.rpc("commit_admin_player_state", {
+      p_user_id: profile.id,
+      p_expected_state: state,
+      p_new_state: newState,
+    });
+    if (commitError) return jsonResponse({ error: commitError.message }, 500);
+    if (!committed) { conflicts++; continue; }
     cleared++;
   }
 
-  return jsonResponse({ ok: true, cleared });
+  return jsonResponse({ ok: true, cleared, conflicts });
 });

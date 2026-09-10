@@ -221,9 +221,6 @@ Deno.serve(async (req: Request) => {
     rows = result.rows; total = result.total;
   }
 
-  const { data: lb, error: rpcErr } = await userClient.rpc("register_jornada", { p_points: total });
-  if (rpcErr) return jsonResponse({ error: rpcErr.message }, 400);
-
   const jHist = Array.isArray(state.jHist) ? [...(state.jHist as unknown[])] : [];
   const jornadaNum = jHist.length + 1;
   const capCard = cards[captain as number]!;
@@ -241,8 +238,18 @@ Deno.serve(async (req: Request) => {
   });
 
   const newState = { ...state, jHist: jHist.slice(0, 50) };
-  const { error: updErr } = await admin.from("profiles").update({ state: newState, updated_at: new Date().toISOString() }).eq("id", userId);
-  if (updErr) return jsonResponse({ error: updErr.message }, 500);
+  const { data: lb, error: commitErr } = await admin.rpc("commit_jornada", {
+    p_user_id: userId,
+    p_expected_state: state,
+    p_jhist: newState.jHist,
+    p_points: total,
+  });
+  if (commitErr) {
+    const message = commitErr.message?.includes("STATE_CONFLICT")
+      ? "O teu progresso mudou entretanto. Atualiza e tenta novamente."
+      : commitErr.message;
+    return jsonResponse({ error: message }, commitErr.message?.includes("STATE_CONFLICT") ? 409 : 500);
+  }
 
   return jsonResponse({ total, rows, jHist: newState.jHist, leaderboard: lb, j: jornadaNum, modo: modoUsado });
 });

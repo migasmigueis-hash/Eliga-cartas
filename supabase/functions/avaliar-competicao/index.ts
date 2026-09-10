@@ -94,14 +94,8 @@ Deno.serve(async (req: Request) => {
     if (allMatches.length === 0) return jsonResponse({ error: `Dados das eliminatórias (${etapaLabel}) ainda não disponíveis.` }, 400);
   }
 
-  async function addEligaPoints(uname: string | null, uid: string, pts: number) {
-    if (!uname || pts <= 0) return;
-    const { data: row } = await admin.from("leaderboard").select("score, jornadas").eq("username", uname).maybeSingle();
-    await admin.from("leaderboard").upsert({ username: uname, user_id: uid, score: ((row?.score as number) ?? 0) + pts, jornadas: ((row?.jornadas as number) ?? 0) + 1, updated_at: new Date().toISOString() }, { onConflict: "username" });
-  }
-
   const { data: profiles } = await admin.from("profiles").select("id, state, username");
-  let evaluated = 0, skipped = 0;
+  let evaluated = 0, skipped = 0, conflicts = 0;
   for (const profile of profiles ?? []) {
     const state = (profile.state ?? {}) as Record<string, unknown>;
     const sub = (state.compSubmit ?? null) as Record<string, unknown> | null;
@@ -125,9 +119,16 @@ Deno.serve(async (req: Request) => {
       cards: cards.map((c) => c!.name), cap: capCard.name, capRarity: capCard.rarity, hasCaster: cards.some((c) => c!.isCaster), rows,
     });
 
-    await admin.from("profiles").update({ state: { ...state, jHist: jHist.slice(0, 50), compSubmit: null }, updated_at: new Date().toISOString() }).eq("id", profile.id);
-    await addEligaPoints((profile.username as string) ?? null, profile.id as string, total);
+    const { data: committed, error: commitError } = await admin.rpc("commit_admin_player_state", {
+      p_user_id: profile.id,
+      p_expected_state: state,
+      p_new_state: { ...state, jHist: jHist.slice(0, 50), compSubmit: null },
+      p_score_delta: total,
+      p_jornada_delta: 1,
+    });
+    if (commitError) return jsonResponse({ error: commitError.message }, 500);
+    if (!committed) { conflicts++; continue; }
     evaluated++;
   }
-  return jsonResponse({ ok: true, evaluated, skipped, etapa: config.etapa, fase: isElim ? "eliminatorias" : `grupo ${config.grupo || "A"}` });
+  return jsonResponse({ ok: true, evaluated, skipped, conflicts, etapa: config.etapa, fase: isElim ? "eliminatorias" : `grupo ${config.grupo || "A"}` });
 });

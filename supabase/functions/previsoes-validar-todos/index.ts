@@ -65,7 +65,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const { data: profiles } = await admin.from("profiles").select("id, state");
-  let resolved = 0, skipped = 0;
+  let resolved = 0, skipped = 0, conflicts = 0;
 
   for (const profile of profiles ?? []) {
     const state = (profile.state ?? {}) as Record<string, unknown>;
@@ -109,9 +109,15 @@ Deno.serve(async (req: Request) => {
       resolved: { rqf, rsf, champ: rchamp, qfHits, sfHits, champOk, score, rewardPack: scoreToRewardPack(score) },
       rewardClaimed: false,
     };
-    await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", profile.id);
+    const { data: committed, error: commitError } = await admin.rpc("commit_admin_player_state", {
+      p_user_id: profile.id,
+      p_expected_state: state,
+      p_new_state: { ...state, prev: newPrev },
+    });
+    if (commitError) return jsonResponse({ error: commitError.message }, 500);
+    if (!committed) { conflicts++; continue; }
     resolved++;
   }
 
-  return jsonResponse({ ok: true, resolved, skipped });
+  return jsonResponse({ ok: true, resolved, skipped, conflicts });
 });

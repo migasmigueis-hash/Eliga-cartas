@@ -67,16 +67,6 @@ Deno.serve(async (req: Request) => {
   const etapaKey = isFinals ? "finals" : `etapa${config.etapa}`;
   const etapaLabel = isFinals ? "Finals" : `Etapa ${config.etapa}`;
 
-  // soma pontos eLiga ao ranking partilhado
-  async function addEligaPoints(uname: string | null, uid: string, pts: number) {
-    if (!uname || pts <= 0) return;
-    const { data: row } = await admin.from("leaderboard").select("score, jornadas").eq("username", uname).maybeSingle();
-    await admin.from("leaderboard").upsert(
-      { username: uname, user_id: uid, score: ((row?.score as number) ?? 0) + pts, jornadas: (row?.jornadas as number) ?? 0, updated_at: new Date().toISOString() },
-      { onConflict: "username" }
-    );
-  }
-
   const { data: profiles } = await admin.from("profiles").select("id, state, twitch_points, username");
   const allProfiles = profiles ?? [];
 
@@ -102,7 +92,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: `Há ${pendingReveal} previsão(ões) de grupos por revelar, mas o bracket real ainda não está em ${etapaKey}_qf. Insere os 4 confrontos QF primeiro.` }, 400);
     }
     const realQual = [...new Set(bracket)];
-    let revealed = 0, skipped = 0;
+    let revealed = 0, skipped = 0, conflicts = 0;
     for (const profile of allProfiles) {
       const state = (profile.state ?? {}) as Record<string, unknown>;
       const prev = (state.prev ?? {}) as Record<string, unknown>;
@@ -127,14 +117,18 @@ Deno.serve(async (req: Request) => {
       if (!jaTem) {
         prevHistG.unshift({ label: `${etapaLabel} · Fase de Grupos`, etapa: config.etapa, fase: "grupos", qualHits, score: qualHits * 10, qual: qualArr, realQual, t: Date.now() });
       }
-      const curTwitch = (profile.twitch_points as number) ?? 0;
-      const upd: Record<string, unknown> = { state: { ...state, prev: newPrev, prevHist: prevHistG.slice(0, 30) }, updated_at: new Date().toISOString() };
-      if (reward.twitch > 0) upd.twitch_points = curTwitch + reward.twitch;
-      await admin.from("profiles").update(upd).eq("id", profile.id);
-      await addEligaPoints((profile.username as string) ?? null, profile.id as string, qualHits * 10);
+      const { data: committed, error: commitError } = await admin.rpc("commit_admin_player_state", {
+        p_user_id: profile.id,
+        p_expected_state: state,
+        p_new_state: { ...state, prev: newPrev, prevHist: prevHistG.slice(0, 30) },
+        p_twitch_delta: reward.twitch,
+        p_score_delta: qualHits * 10,
+      });
+      if (commitError) return jsonResponse({ error: commitError.message }, 500);
+      if (!committed) { conflicts++; continue; }
       revealed++;
     }
-    return jsonResponse({ ok: true, mode: "grupos", revealed, skipped, realQual });
+    return jsonResponse({ ok: true, mode: "grupos", revealed, skipped, conflicts, realQual });
   }
 
   // ===== MODO elim =====
@@ -157,7 +151,7 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  let resolved = 0, skipped = 0;
+  let resolved = 0, skipped = 0, conflicts = 0;
   for (const profile of allProfiles) {
     const state = (profile.state ?? {}) as Record<string, unknown>;
     const prev = (state.prev ?? {}) as Record<string, unknown>;
@@ -203,13 +197,17 @@ Deno.serve(async (req: Request) => {
     const prevHist = Array.isArray((state as any).prevHist) ? [...(state as any).prevHist] : [];
     prevHist.unshift({ label: `${etapaLabel} · Eliminatórias`, etapa: config.etapa, fase: "elim", qfHits, sfHits, champOk, score: elimPts, t: Date.now() });
 
-    const curTwitch = (profile.twitch_points as number) ?? 0;
-    const upd: Record<string, unknown> = { state: { ...state, prev: newPrev, prevHist: prevHist.slice(0, 30) }, updated_at: new Date().toISOString() };
-    if (reward.twitch > 0) upd.twitch_points = curTwitch + reward.twitch;
-    await admin.from("profiles").update(upd).eq("id", profile.id);
-    await addEligaPoints((profile.username as string) ?? null, profile.id as string, elimPts);
+    const { data: committed, error: commitError } = await admin.rpc("commit_admin_player_state", {
+      p_user_id: profile.id,
+      p_expected_state: state,
+      p_new_state: { ...state, prev: newPrev, prevHist: prevHist.slice(0, 30) },
+      p_twitch_delta: reward.twitch,
+      p_score_delta: elimPts,
+    });
+    if (commitError) return jsonResponse({ error: commitError.message }, 500);
+    if (!committed) { conflicts++; continue; }
     resolved++;
   }
 
-  return jsonResponse({ ok: true, mode: "elim", resolved, skipped });
+  return jsonResponse({ ok: true, mode: "elim", resolved, skipped, conflicts });
 });
