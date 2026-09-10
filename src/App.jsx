@@ -2053,12 +2053,6 @@ function App() {
     setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setDirectTradeConfirm(null); setTradeChecking(false); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompEditing(false); setCompResult(null); setLastSeenCompetitionResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
-  const addCards = (cards) => setCollection((prev) => {
-    const next = { ...prev };
-    cards.forEach((c) => (next[c.id] = (next[c.id] || 0) + 1));
-    return next;
-  });
-
   const openPack = async (pack, claim, extra) => {
     if (pack.locked) return false;
     playFx("tap", muted);
@@ -2863,9 +2857,14 @@ function App() {
     if (/^(✓|\+)|sucesso|guardad|copiado/i.test(toast)) playFx("success", muted);
     else if (/não |erro|inválid|incorret|terminou|insuficient|já (?:usaste|fizeste|estás)/i.test(toast)) playFx("error", muted);
   }, [toast]);
-  const openAdminPack = () => {
-    addCards(POOL);
-    setToast(`Pack Admin: ${POOL.length} cartas adicionadas (1 de cada)`);
+  const openAdminPack = async () => {
+    const { data, message } = await invokeFn("open-pack", { packId: "admin" }, "Não foi possível abrir o Pack Admin. Tenta novamente.");
+    if (message) {
+      setToast(message); setTimeout(() => setToast(null), 2600);
+      return;
+    }
+    setCollection(data.collection);
+    setToast(`Pack Admin: ${data.cardIds.length} cartas adicionadas (1 de cada)`);
     setTimeout(() => setToast(null), 2600);
   };
 

@@ -17,8 +17,7 @@
 //   - trivia:     { day, pick, ok } — recompensa da Pergunta do dia (uma vez por dia)
 //   - spendTwitchPoints: true     — debita pack.twitchCost de twitch_points (Fase 5.3)
 //
-// (O "Pack Admin" — ferramenta de testes que dá 1 de cada carta — não passa
-// por esta função; continua só client-side para a conta admin.)
+// O "Pack Admin" dá uma cópia de cada carta e exige is_admin no servidor.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
@@ -64,6 +63,7 @@ Deno.serve(async (req: Request) => {
   const cardPool = configuredCardPool(config);
 
   let pack = PACKS.find((item) => item.id === body.packId);
+  const isAdminPack = body.packId === "admin";
   let customPool: CardRef[] | undefined;
   if (body.packId?.startsWith("custom:")) {
     const publishedBatches = publishedCardBatches(config);
@@ -75,12 +75,12 @@ Deno.serve(async (req: Request) => {
       customPool = cards;
     }
   }
-  if (!pack) return jsonResponse({ error: "Pack desconhecido." }, 400);
-  if (pack.locked || (!customPool && (pack.id === "etapa1" || pack.id.startsWith("custom:")))) return jsonResponse({ error: "Este pack ainda não está disponível." }, 400);
+  if (!pack && !isAdminPack) return jsonResponse({ error: "Pack desconhecido." }, 400);
+  if (pack && (pack.locked || (!customPool && (pack.id === "etapa1" || pack.id.startsWith("custom:"))))) return jsonResponse({ error: "Este pack ainda não está disponível." }, 400);
 
   const { data: profile, error: profErr } = await admin
     .from("profiles")
-    .select("state")
+    .select("state, is_admin")
     .eq("id", userId)
     .single();
   if (profErr || !profile) return jsonResponse({ error: "Perfil não encontrado." }, 404);
@@ -88,6 +88,23 @@ Deno.serve(async (req: Request) => {
   const state = (profile.state ?? {}) as Record<string, unknown>;
   const prevMeta = (state.meta as Record<string, unknown>) ?? {};
   const collectionBefore = (state.collection as Record<string, number>) ?? {};
+
+  if (isAdminPack) {
+    if (!profile.is_admin) return jsonResponse({ error: "Acesso reservado a administradores." }, 403);
+    const collection = { ...collectionBefore };
+    for (const card of cardPool) collection[card.id] = (collection[card.id] ?? 0) + 1;
+    const newState = { ...state, collection };
+    const { data: updatedProfile, error: updErr } = await admin
+      .from("profiles")
+      .update({ state: newState, updated_at: new Date().toISOString() })
+      .eq("id", userId)
+      .eq("state", JSON.stringify(state))
+      .select("id")
+      .maybeSingle();
+    if (updErr) return jsonResponse({ error: updErr.message }, 500);
+    if (!updatedProfile) return jsonResponse({ error: "O teu progresso mudou entretanto. Tenta novamente." }, 409);
+    return jsonResponse({ cardIds: cardPool.map((card) => card.id), collection });
+  }
 
   // valida a recompensa de objetivo (se aplicável): recalcula prog/alvo no
   // servidor e confirma que este "pack" é mesmo a recompensa desse objetivo
@@ -146,7 +163,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "As aberturas grátis estão temporariamente desativadas. Liga a tua conta Twitch para trocar pontos por packs." }, 403);
   }
 
-  const { collection, meta, hist, cardIds } = applyPackOpening(state, pack, customPool);
+  const { collection, meta, hist, cardIds } = applyPackOpening(state, pack!, customPool);
 
   // marca o objetivo como reclamado (já validado acima), na mesma escrita
   // — evita a corrida entre o "claim" local e este pedido
