@@ -1836,6 +1836,31 @@ function App() {
   const [vitrine, setVitrine] = useState([null, null, null]);
   const [vitrinePick, setVitrinePick] = useState(null);
   const [directTrade, setDirectTrade] = useState(null);
+  const [directTradeConfirm, setDirectTradeConfirm] = useState(null);
+  const directTradeDialogRef = useRef(null);
+  const directTradeReturnId = useRef(null);
+  useEffect(() => {
+    if (!directTradeConfirm) return;
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDirectTradeConfirm(null);
+        return;
+      }
+      if (event.key !== "Tab" || !directTradeDialogRef.current) return;
+      const controls = [...directTradeDialogRef.current.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')];
+      if (!controls.length) return;
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      const returnId = directTradeReturnId.current;
+      setTimeout(() => document.querySelector(`[data-direct-trade-card="${returnId}"]`)?.focus(), 0);
+    };
+  }, [directTradeConfirm]);
   const [prev, setPrev] = useState(EMPTY_PREV);
   const [prevHist, setPrevHist] = useState([]); // histórico de previsões por etapa (pontos por fase)
   const [escolhas, setEscolhas] = useState(0);
@@ -2020,7 +2045,7 @@ function App() {
 
   const logout = async () => {
     await supabase.auth.signOut();
-    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompEditing(false); setCompResult(null); setLastSeenCompetitionResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
+    setUsername(null); setIsAdmin(false); setTwitchLogin(null); setTwitchPoints(0); setCollection({}); setMeta({ dias: [], packs: {}, claims: {}, pity: 0 }); setTradePreview(null); setLineup([null, null, null]); setCaptain(null); setHist([]); setCodesUsed([]); setCodeInput(""); setEscolhas(0); setEscSlot(null); setPicksUsed({}); setJHist([]); setVitrine([null, null, null]); setVitrinePick(null); setDirectTrade(null); setDirectTradeConfirm(null); setPrev(EMPTY_PREV); setPrevHist([]); setCompSubmit(null); setCompEditing(false); setCompResult(null); setLastSeenCompetitionResult(null); setOnboardStep(null); setTab("loja"); setOpening(null);
   };
 
   const addCards = (cards) => setCollection((prev) => {
@@ -2372,6 +2397,7 @@ function App() {
   };
   const directTradeGo = async (rarity, target) => {
     setDirectTrade(null);
+    setDirectTradeConfirm(null);
     const ownedBefore = new Set(Object.keys(collection).filter((k) => collection[k] > 0));
     const { data, message } = await invokeFn("trade-cards", { mode: "direct", rarity, targetId: target.id }, "Não foi possível fazer a troca. Tenta novamente.");
     if (message) {
@@ -3109,7 +3135,7 @@ function App() {
                       <div style={{ width: `${Math.min(100, (have / cost) * 100)}%`, height: "100%", background: ready ? `linear-gradient(90deg, ${r.color}, #1BF5A3)` : r.color + "88", transition: "width 400ms" }} />
                     </div>
                   </div>
-                  <button onClick={() => (mode === "rand" ? startTrade(rar) : setDirectTrade(rar))} disabled={!ready} style={{ ...btn(ready), opacity: ready ? 1 : 0.35, cursor: ready ? "pointer" : "not-allowed" }}>{mode === "rand" ? "Trocar" : "Escolher carta"}</button>
+                  <button onClick={() => { if (mode === "rand") startTrade(rar); else { setDirectTradeConfirm(null); setDirectTrade(rar); } }} disabled={!ready} style={{ ...btn(ready), opacity: ready ? 1 : 0.35, cursor: ready ? "pointer" : "not-allowed" }}>{mode === "rand" ? "Trocar" : "Escolher carta"}</button>
                 </div>
               );
             })}
@@ -4233,14 +4259,14 @@ function App() {
         />
       )}
 
-      {directTrade && (
+      {directTrade && !directTradeConfirm && (
         <div onClick={() => setDirectTrade(null)} style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(3,6,12,0.92)", overflowY: "auto", padding: "30px 16px", cursor: "pointer" }}>
           <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: 860, margin: "0 auto", background: "#0E162E", border: "1px solid #39E6FF44", borderRadius: 18, padding: 22, cursor: "default" }}>
             <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, margin: 0, color: "#fff" }}>Troca à escolha — escolhe a tua carta {RARITY[RARITY_UP[directTrade]].label}</h2>
-            <div style={{ fontSize: 13, color: "#8fa3bd", margin: "8px 0 18px" }}>Custa {TRADE_DIRECT} duplicados {RARITY[directTrade].label}. Toca na carta que queres — a troca é imediata.</div>
+            <div style={{ fontSize: 13, color: "#8fa3bd", margin: "8px 0 18px" }}>Custa {TRADE_DIRECT} duplicados {RARITY[directTrade].label}. Escolhe a carta e confirma antes de fazer a troca.</div>
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
               {POOL.filter((c) => c.rarity === RARITY_UP[directTrade]).sort((a, b) => b.ovr - a.ovr).map((c) => (
-                <div key={c.id} onClick={() => directTradeGo(directTrade, c)} style={{ cursor: "pointer", textAlign: "center" }}>
+                <div key={c.id} data-direct-trade-card={c.id} onClick={() => { directTradeReturnId.current = c.id; setDirectTradeConfirm({ rarity: directTrade, card: c }); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); directTradeReturnId.current = c.id; setDirectTradeConfirm({ rarity: directTrade, card: c }); } }} role="button" tabIndex={0} aria-label={`Escolher ${c.name}`} style={{ cursor: "pointer", textAlign: "center" }}>
                   <Card card={c} width={120} interactive={false} dim={!(collection[c.id] > 0) && false} />
                   <div style={{ fontSize: 10.5, color: collection[c.id] > 0 ? "#6f87a8" : "#1BF5A3", marginTop: 4 }}>{collection[c.id] > 0 ? `tens ${collection[c.id]}` : "não tens — NOVA"}</div>
                 </div>
@@ -4248,6 +4274,21 @@ function App() {
             </div>
             <div style={{ textAlign: "center", marginTop: 18 }}>
               <button onClick={() => setDirectTrade(null)} style={btn(false)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {directTradeConfirm && (
+        <div onClick={() => setDirectTradeConfirm(null)} role="dialog" aria-modal="true" aria-labelledby="direct-trade-confirm-title" style={{ position: "fixed", inset: 0, zIndex: 71, background: "rgba(3,6,12,0.94)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div ref={directTradeDialogRef} onClick={(e) => e.stopPropagation()} style={{ width: 440, maxWidth: "100%", maxHeight: "90vh", overflowY: "auto", background: "#0E162E", border: `1px solid ${RARITY[directTradeConfirm.card.rarity].color}66`, borderRadius: 18, padding: 24, textAlign: "center", animation: "pop 240ms ease-out" }}>
+            <h2 id="direct-trade-confirm-title" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, margin: "0 0 8px", color: "#fff" }}>Confirmar carta escolhida</h2>
+            <div style={{ fontSize: 13, color: "#8fa3bd", marginBottom: 18 }}>Vais usar {TRADE_DIRECT} duplicados de raridade {RARITY[directTradeConfirm.rarity].label.toLowerCase()} para receber esta carta.</div>
+            <div style={{ display: "flex", justifyContent: "center" }}><Card card={directTradeConfirm.card} width={180} interactive={false} /></div>
+            <div style={{ fontFamily: FONT, fontWeight: 700, color: "#fff", marginTop: 14 }}>{directTradeConfirm.card.name}</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginTop: 20 }}>
+              <button autoFocus onClick={() => directTradeGo(directTradeConfirm.rarity, directTradeConfirm.card)} style={btn(true)}>Confirmar troca</button>
+              <button onClick={() => setDirectTradeConfirm(null)} style={btn(false)}>Voltar</button>
             </div>
           </div>
         </div>
