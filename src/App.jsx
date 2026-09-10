@@ -530,8 +530,9 @@ function playFx(kind, muted) {
       tone(990, 0.22, 0.34, "triangle", 0.05, 1320);
     }
     if (kind === "tearTick") {
-      noise(0, 0.07, 0.045, "highpass", 1800);
-      noise(0.012, 0.045, 0.025, "bandpass", 4200);
+      noise(0, 0.075, 0.04, "bandpass", 1050);
+      noise(0.014, 0.05, 0.02, "lowpass", 2300);
+      tone(105, 0, 0.055, "sine", 0.018, 82);
     }
     if (kind === "tear") {
       noise(0, 0.34, 0.15, "bandpass", 1700);
