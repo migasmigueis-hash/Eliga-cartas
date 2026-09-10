@@ -14,7 +14,7 @@
 //                  reclamado, e que este pack é mesmo a recompensa desse
 //                  objetivo) — ver _shared/objectives.ts
 //   - prevReward: true            — recompensa das Previsões
-//   - trivia:     { day, pick, ok } — recompensa da Pergunta do dia (uma vez por dia)
+//   - trivia:     { day, pick } — resposta à Pergunta do dia (uma vez por dia)
 //   - spendTwitchPoints: true     — debita pack.twitchCost de twitch_points (Fase 5.3)
 //
 // O "Pack Admin" dá uma cópia de cada carta e exige is_admin no servidor.
@@ -24,6 +24,7 @@ import { CORS_HEADERS, jsonResponse } from "../_shared/cors.ts";
 import { PACKS, applyPackOpening, todayStr, type CardRef, type PackDef } from "../_shared/gameData.ts";
 import { validateObjectiveClaim } from "../_shared/objectives.ts";
 import { configuredCardPool, publishedCardBatches } from "../_shared/configuredCardPool.ts";
+import { triviaForDay } from "../_shared/trivia.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
@@ -33,7 +34,7 @@ Deno.serve(async (req: Request) => {
     packId?: string;
     claim?: { id?: string; periodo?: string };
     prevReward?: boolean;
-    trivia?: { day?: string; pick?: number; ok?: boolean };
+    trivia?: { day?: string; pick?: number };
     spendTwitchPoints?: boolean;
   };
   try {
@@ -134,12 +135,30 @@ Deno.serve(async (req: Request) => {
   // valida a recompensa da Trivia (no máximo uma vez por dia, e só para "hoje")
   let triviaPatch: { day: string; pick: number; ok: boolean } | null = null;
   const trivia = body.trivia;
-  if (
-    trivia && typeof trivia.day === "string" && trivia.day === todayStr() &&
-    typeof trivia.pick === "number" && typeof trivia.ok === "boolean"
-  ) {
+  if (trivia) {
+    if (body.packId !== PACKS[0].id) return jsonResponse({ error: "A trivia só pode atribuir o Pack Base." }, 400);
+    if (typeof trivia.day !== "string" || trivia.day !== todayStr() || !Number.isInteger(trivia.pick) || trivia.pick! < 0 || trivia.pick! > 3) {
+      return jsonResponse({ error: "Resposta de trivia inválida." }, 400);
+    }
     const prevTrivia = (prevMeta.trivia as Record<string, unknown>) ?? {};
-    if (!prevTrivia[trivia.day]) triviaPatch = { day: trivia.day, pick: trivia.pick, ok: trivia.ok };
+    if (prevTrivia[trivia.day]) return jsonResponse({ error: "Já respondeste à trivia de hoje." }, 400);
+    triviaPatch = { day: trivia.day, pick: trivia.pick!, ok: triviaForDay(trivia.day).a === trivia.pick };
+  }
+
+  if (triviaPatch && !triviaPatch.ok) {
+    const prevTrivia = (prevMeta.trivia as Record<string, unknown>) ?? {};
+    const meta = { ...prevMeta, trivia: { ...prevTrivia, [triviaPatch.day]: { pick: triviaPatch.pick, ok: false } } };
+    const newState = { ...state, meta };
+    const { data: updatedProfile, error: updErr } = await admin
+      .from("profiles")
+      .update({ state: newState, updated_at: new Date().toISOString() })
+      .eq("id", userId)
+      .eq("state", JSON.stringify(state))
+      .select("id")
+      .maybeSingle();
+    if (updErr) return jsonResponse({ error: updErr.message }, 500);
+    if (!updatedProfile) return jsonResponse({ error: "O teu progresso mudou entretanto. Tenta novamente." }, 409);
+    return jsonResponse({ correct: false, meta });
   }
 
   // gastar pontos Twitch (débito atómico, falha se o saldo for insuficiente)
@@ -202,5 +221,5 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "O teu progresso mudou entretanto. Os pontos foram devolvidos; tenta novamente." }, 409);
   }
 
-  return jsonResponse({ cardIds, collection, meta, hist, twitchPoints: newTwitchPoints });
+  return jsonResponse({ cardIds, collection, meta, hist, twitchPoints: newTwitchPoints, ...(triviaPatch ? { correct: true } : {}) });
 });

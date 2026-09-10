@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from './lib/supabaseClient';
+import { triviaForDay } from '../supabase/functions/_shared/trivia';
 
 
 /* ============================================================
@@ -232,26 +233,7 @@ function buildPickBoard(seed, premium = false) {
 
 const TRADE_DIRECT = 25; // duplicados para escolher uma carta específica da raridade acima
 
-// Trivia diária — uma pergunta por dia, acertar dá 1 Escolha
-const TRIVIA = [
-  { q: "Quem venceu as Finals 25/26 e é campeão nacional?", opts: ["SL Benfica", "Santa Clara", "Estrela Amadora", "FC Porto"], a: 0 },
-  { q: "Que clube venceu a Taça eLiga 25/26?", opts: ["SL Benfica", "Santa Clara", "Sporting CP", "Moreirense"], a: 1 },
-  { q: "Quem venceu a Etapa 1 da época 25/26?", opts: ["Santa Clara", "Estrela Amadora", "SL Benfica", "AFS"], a: 2 },
-  { q: "Quem venceu a Etapa 2 da época 25/26?", opts: ["Santa Clara", "SL Benfica", "FC Porto", "Arouca"], a: 0 },
-  { q: "Quem venceu a Etapa 3 da época 25/26?", opts: ["Moreirense", "Famalicão", "Gil Vicente", "Estrela Amadora"], a: 3 },
-  { q: "Que clube terminou em 1º na classificação geral por pontos?", opts: ["SL Benfica", "Santa Clara", "Estrela Amadora", "Sporting CP"], a: 1 },
-  { q: "Quantos golos marcou o Luca-NR1 na época 25/26?", opts: ["98", "112", "130", "85"], a: 2 },
-  { q: "Quem teve a melhor percentagem de vitórias da época (87.5%)?", opts: ["GugaFerraz", "Leks", "Tundi", "Gueric"], a: 1 },
-  { q: "Quantos clubes participam na eLiga Portugal?", opts: ["16", "18", "20", "12"], a: 1 },
-  { q: "Que jogador do Alverca marcou 112 golos na época?", opts: ["Giobundyy", "Rodr7gol", "phoenix3687", "Jotapb10"], a: 0 },
-  { q: "Qual foi a média de golos por jogo do Leks?", opts: ["4.87", "5.68", "6.13", "6.59"], a: 2 },
-  { q: "Quem disputou mais jogos na época 25/26 (22 jogos)?", opts: ["Leks", "Luca-NR1", "Jotapb10", "DiogoPeyroteo9"], a: 1 },
-  { q: "Que clube representa o GugaFerraz?", opts: ["SL Benfica", "FC Porto", "Santa Clara", "Braga"], a: 2 },
-  { q: "Que clube terminou a geral com 0 pontos?", opts: ["Casa Pia", "Nacional", "Braga", "Rio Ave"], a: 1 },
-  { q: "Quem é o pivot da equipa de transmissão da eLiga?", opts: ["Don Pablo", "Dantas", "PickyWiky", "Mucha"], a: 2 },
-  { q: "Que clube representa o Gueric, vencedor da Etapa 3?", opts: ["Estrela Amadora", "Moreirense", "Tondela", "Estoril"], a: 0 },
-];
-const triviaOfDay = () => TRIVIA[Math.floor(Date.now() / 86400000) % TRIVIA.length];
+const triviaOfDay = () => triviaForDay(todayStr());
 
 // Conquistas — insígnias permanentes calculadas sobre o estado do jogador
 function calcStreak(dias) {
@@ -1779,6 +1761,7 @@ function App() {
   const [adminSyncLog, setAdminSyncLog] = useState(null); // resultado do último sync
   const [adminSyncing, setAdminSyncing] = useState(false);
   const [adminConfigSaving, setAdminConfigSaving] = useState(false);
+  const adminConfigSavingRef = useRef(false);
   const [adminAvalLog, setAdminAvalLog] = useState(null); // resultado da última avaliação de previsões
   const [adminAvaliando, setAdminAvaliando] = useState(false);
   const [adminProximaFaseAtivo, setAdminProximaFaseAtivo] = useState(false);
@@ -2161,22 +2144,29 @@ function App() {
 
   // equipas que jogam hoje: carregadas do Supabase quando ligaConfig muda
   const [grupoEquipasHoje, setGrupoEquipasHoje] = useState(new Set());
+  const [grupoEquipasStatus, setGrupoEquipasStatus] = useState("unrestricted");
   useEffect(() => {
+    let active = true;
     const cfg = ligaConfig;
     if (cfg?.etapa) setAdminPasteEtapa(String(cfg.etapa));
     if (!cfg || cfg.modo !== "real" || !cfg.etapa) {
       setGrupoEquipasHoje(new Set());
-      return;
+      setGrupoEquipasStatus("unrestricted");
+      return () => { active = false; };
     }
+    setGrupoEquipasHoje(new Set());
+    setGrupoEquipasStatus("loading");
     const etapaKey = cfg.etapa === "finals" ? "finals" : `etapa${cfg.etapa}`;
 
     if (cfg.fase === "grupos" && cfg.grupo) {
       supabase.from("liga_data").select("data").eq("key", `${etapaKey}_grupos`).single()
         .then(({ data: row }) => {
+          if (!active) return;
           const equipas = row?.data?.[cfg.grupo] || [];
           setGrupoEquipasHoje(new Set(equipas));
+          setGrupoEquipasStatus(equipas.length ? "ready" : "error");
         })
-        .catch(() => setGrupoEquipasHoje(new Set()));
+        .catch(() => { if (active) { setGrupoEquipasHoje(new Set()); setGrupoEquipasStatus("error"); } });
     } else if (cfg.fase === "eliminatorias") {
       const etapaKey = cfg.etapa === "finals" ? "finals" : `etapa${cfg.etapa}`;
       const equipasKey = etapaKey === "finals" ? "finals_grupos" : `${etapaKey}_qf`;
@@ -2187,6 +2177,7 @@ function App() {
         for (const key of tryKeys) {
           try {
             const { data: row } = await supabase.from("liga_data").select("data").eq("key", key).single();
+            if (!active) return;
             if (!row?.data) continue;
             let equipas = [];
             if (etapaKey === "finals") {
@@ -2200,21 +2191,26 @@ function App() {
                 }
               }
             }
-            if (equipas.length > 0) { setGrupoEquipasHoje(new Set(equipas)); return; }
+            if (equipas.length > 0) { setGrupoEquipasHoje(new Set(equipas)); setGrupoEquipasStatus("ready"); return; }
           } catch (_) { /* tentar próxima key */ }
         }
+        if (!active) return;
         setGrupoEquipasHoje(new Set());
+        setGrupoEquipasStatus("error");
       };
       tryLoad();
     } else {
       setGrupoEquipasHoje(new Set());
+      setGrupoEquipasStatus("error");
     }
+    return () => { active = false; };
   }, [ligaConfig]);
 
   // uma carta é elegível se: caster OU sem restrição OU a sua equipa joga hoje
   const isCardEligible = (card) => {
     if (!card) return true;
-    if (grupoEquipasHoje.size === 0) return true; // sem restrição (simulação ou sem dados)
+    if (ligaConfig?.modo !== "real") return true;
+    if (grupoEquipasStatus !== "ready") return false;
     if (card.isCaster) return true;
     return grupoEquipasHoje.has(card.team);
   };
@@ -2481,13 +2477,20 @@ function App() {
   const answerTrivia = async (idx) => {
     const t = todayStr();
     if ((meta.trivia || {})[t]) return;
-    const q = triviaOfDay();
-    const ok = idx === q.a;
-    if (ok) {
+    const ownedBefore = new Set(Object.keys(collection).filter((key) => collection[key] > 0));
+    const { data, message } = await invokeFn("open-pack", { packId: PACKS[0].id, trivia: { day: t, pick: idx } }, "Não foi possível registar a resposta. Tenta novamente.");
+    if (message) {
+      setToast(message); setTimeout(() => setToast(null), 2600);
+      return;
+    }
+    setMeta(data.meta);
+    if (data.correct) {
       playFx("rara", muted);
-      await openPack(PACKS[0], null, { trivia: { day: t, pick: idx, ok } });
+      const cards = data.cardIds.map((id) => POOL.find((card) => card.id === id)).filter(Boolean);
+      setCollection(data.collection);
+      setHist(data.hist);
+      setOpening({ pack: PACKS[0], cards, ownedBefore, initialPhase: "pack", again: null });
     } else {
-      setMeta((m) => ({ ...m, trivia: { ...(m.trivia || {}), [t]: { pick: idx, ok } } }));
       setToast("Errada — volta amanhã para nova pergunta."); setTimeout(() => setToast(null), 2600);
     }
   };
@@ -2646,13 +2649,17 @@ function App() {
     } catch (e) { /* ignora */ }
   };
   const adminSaveConfig = async (patch) => {
+    if (adminConfigSavingRef.current) return false;
+    const previousConfig = ligaConfig;
+    adminConfigSavingRef.current = true;
     setAdminConfigSaving(true);
     setLigaConfig((prev) => ({ ...(prev || {}), ...patch }));
     const { data, message } = await invokeFn("admin-liga-config", patch, "Erro ao guardar configuração.");
     console.log("[adminSaveConfig] patch=", patch, "data=", data, "message=", message);
+    adminConfigSavingRef.current = false;
     setAdminConfigSaving(false);
     if (message) {
-      setLigaConfig((prev) => ({ ...(prev || {}), ...Object.fromEntries(Object.keys(patch).map((k) => [k, prev?.[k]])) }));
+      setLigaConfig(previousConfig);
       setToast(message); setTimeout(() => setToast(null), 2600); return false;
     }
     setLigaConfig(data.config);
@@ -3242,6 +3249,11 @@ function App() {
           )}
 
           {/* clubes que jogam hoje */}
+          {ligaConfig?.modo === "real" && grupoEquipasStatus !== "ready" && (
+            <div style={{ marginTop: 14, color: grupoEquipasStatus === "loading" ? "#8fa3bd" : "#ff7b8a", fontSize: 13 }}>
+              {grupoEquipasStatus === "loading" ? "A carregar equipas elegíveis…" : "As equipas elegíveis não estão disponíveis. Não é possível submeter uma equipa."}
+            </div>
+          )}
           {grupoEquipasHoje.size > 0 && (
             <div style={{ marginTop: 14, background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "14px 18px" }}>
               <div style={{ fontFamily: FONT, fontSize: 11, letterSpacing: 2, color: "#39E6FF", marginBottom: 12 }}>

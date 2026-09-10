@@ -35,8 +35,9 @@ Deno.serve(async (req: Request) => {
 
   const save = async (prev: Record<string, unknown>, modo: string) => {
     const withRef = { ...prev, cfgRef };
-    const { error } = await admin.from("profiles").update({ state: { ...state, prev: withRef }, updated_at: new Date().toISOString() }).eq("id", userId);
+    const { data: updatedProfile, error } = await admin.from("profiles").update({ state: { ...state, prev: withRef }, updated_at: new Date().toISOString() }).eq("id", userId).eq("state", JSON.stringify(state)).select("id").maybeSingle();
     if (error) return jsonResponse({ error: error.message }, 500);
+    if (!updatedProfile) return jsonResponse({ error: "O teu progresso mudou entretanto. Atualiza e tenta novamente." }, 409);
     return jsonResponse({ prev: withRef, modo });
   };
 

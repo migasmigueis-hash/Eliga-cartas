@@ -89,8 +89,9 @@ Deno.serve(async (req: Request) => {
     };
   }
 
-  const { error: updErr } = await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", userId);
+  const { data: updatedProfile, error: updErr } = await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", userId).eq("state", JSON.stringify(state)).select("id").maybeSingle();
   if (updErr) return jsonResponse({ error: updErr.message }, 500);
+  if (!updatedProfile) return jsonResponse({ error: "O teu progresso mudou entretanto. Atualiza e tenta novamente." }, 409);
 
   return jsonResponse({ prev: newPrev, modo: config.modo });
 });

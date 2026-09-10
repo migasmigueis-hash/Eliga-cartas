@@ -55,8 +55,9 @@ Deno.serve(async (req: Request) => {
     const gr = (prev.groupResult ?? null) as Record<string, unknown> | null;
     if (!gr || gr.locked !== true) return jsonResponse({ error: "Não há previsão de apurados bloqueada para alterar." }, 400);
     const newPrev = { ...prev, groupResult: null }; // mantém prev.qual
-    const { error } = await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", userId);
+    const { data: updatedProfile, error } = await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", userId).eq("state", JSON.stringify(state)).select("id").maybeSingle();
     if (error) return jsonResponse({ error: error.message }, 500);
+    if (!updatedProfile) return jsonResponse({ error: "O teu progresso mudou entretanto. Atualiza e tenta novamente." }, 409);
     return jsonResponse({ prev: newPrev });
   } else {
     if (config.prazoElim) {
@@ -65,8 +66,9 @@ Deno.serve(async (req: Request) => {
     }
     if (prev.bracketLocked !== true) return jsonResponse({ error: "Não há previsão de eliminatórias bloqueada para alterar." }, 400);
     const newPrev = { ...prev, bracketLocked: false }; // mantém qf/sf/fin
-    const { error } = await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", userId);
+    const { data: updatedProfile, error } = await admin.from("profiles").update({ state: { ...state, prev: newPrev }, updated_at: new Date().toISOString() }).eq("id", userId).eq("state", JSON.stringify(state)).select("id").maybeSingle();
     if (error) return jsonResponse({ error: error.message }, 500);
+    if (!updatedProfile) return jsonResponse({ error: "O teu progresso mudou entretanto. Atualiza e tenta novamente." }, 409);
     return jsonResponse({ prev: newPrev });
   }
 });
