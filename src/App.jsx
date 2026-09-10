@@ -529,10 +529,15 @@ function playFx(kind, muted) {
       tone(660, 0.1, 0.22, "sine", 0.06, 880);
       tone(990, 0.22, 0.34, "triangle", 0.05, 1320);
     }
-    if (kind === "tearTick") { noise(0, 0.055, 0.045, "highpass", 900); tone(150, 0, 0.04, "sine", 0.025, 120); }
+    if (kind === "tearTick") {
+      noise(0, 0.07, 0.045, "highpass", 1800);
+      noise(0.012, 0.045, 0.025, "bandpass", 4200);
+    }
     if (kind === "tear") {
-      noise(0, 0.28, 0.2, "lowpass", 1800);
-      tone(130, 0.08, 0.3, "sine", 0.12, 70);
+      noise(0, 0.34, 0.15, "bandpass", 1700);
+      noise(0.025, 0.24, 0.085, "highpass", 3800);
+      [0.04, 0.1, 0.17, 0.24].forEach((start, index) => noise(start, 0.04, 0.045 - index * 0.006, "highpass", 5200 - index * 600));
+      tone(115, 0.18, 0.24, "sine", 0.07, 72);
     }
     if (kind === "flip") { noise(0, 0.1, 0.045, "highpass", 1800); tone(420, 0, 0.09, "sine", 0.07, 760); }
     if (kind === "ready") { tone(330, 0, 0.12, "sine", 0.06, 440); tone(660, 0.1, 0.3, "triangle", 0.09, 880); }
@@ -1285,13 +1290,11 @@ function PackOpening({ pack, cards, ownedBefore, initialPhase = "pack", muted = 
     if (!tearing.current || phase !== "pack" || !dragRef.current) return;
     const b = dragRef.current.getBoundingClientRect();
     const p = Math.min(1, Math.max(0, (e.clientX - b.left) / b.width));
-    const soundStep = Math.min(3, Math.floor(p * 4));
+    const soundStep = Math.min(7, Math.floor(p * 8));
     if (soundStep > tearSoundStep.current) { tearSoundStep.current = soundStep; playFx("tearTick", muted); }
-    setTearProg((prev) => {
-      const np = Math.max(prev, p);
-      if (np >= 0.92 && prev < 0.92) { tearing.current = false; tear(); }
-      return np;
-    });
+    else if (soundStep < tearSoundStep.current && p < tearSoundStep.current / 8 - 0.03) tearSoundStep.current = soundStep;
+    setTearProg(p);
+    if (p >= 0.92) { tearing.current = false; tear(); }
   };
   const onTearUp = (e) => {
     tearing.current = false;
