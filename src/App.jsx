@@ -1514,6 +1514,15 @@ function AuthScreen({ onLogin }) {
     }
   };
 
+  const signInWithTwitch = async () => {
+    setBusy(true); setError(""); setInfo("");
+    const { error: err } = await supabase.auth.signInWithOAuth({
+      provider: "twitch",
+      options: { redirectTo: `${window.location.origin}${window.location.pathname}` },
+    });
+    if (err) { setError(authErrorMessage(err)); setBusy(false); }
+  };
+
   const input = { width: "100%", boxSizing: "border-box", padding: "12px 14px", borderRadius: 10, border: "1px solid #22304d", background: "#0A1126", color: "#E7EEF8", fontSize: 14, outline: "none", fontFamily: "system-ui,sans-serif" };
 
   return (
@@ -1545,6 +1554,12 @@ function AuthScreen({ onLogin }) {
           {info && <div role="status" style={{ fontSize: 12, color: "#1BF5A3", background: "#1BF5A314", border: "1px solid #1BF5A333", borderRadius: 8, padding: "8px 12px" }}>{info}</div>}
           <button onClick={submit} disabled={busy} style={{ ...btn(true), width: "100%", opacity: busy ? 0.6 : 1, marginTop: 4 }}>
             {busy ? "Um momento…" : mode === "registo" ? "Criar conta e jogar" : "Entrar"}
+          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#526583", fontSize: 10 }}>
+            <span style={{ height: 1, flex: 1, background: "#22304d" }} />OU<span style={{ height: 1, flex: 1, background: "#22304d" }} />
+          </div>
+          <button onClick={signInWithTwitch} disabled={busy} style={{ ...btn(false), width: "100%", background: "#9146FF", borderColor: "#9146FF", color: "#fff", opacity: busy ? 0.6 : 1 }}>
+            {mode === "registo" ? "Criar conta com Twitch" : "Entrar com Twitch"}
           </button>
         </div>
         <div style={{ fontSize: 11, color: "#44557a", textAlign: "center", marginTop: 18, lineHeight: 1.5 }}>
@@ -1758,6 +1773,14 @@ function App() {
   const storePacks = PACKS.flatMap((pack) =>
     pack.id === "etapa1" && customStorePacks.length ? customStorePacks : [pack]
   );
+  const oddsForPack = (pack) => {
+    if (pack.id === "base") return PACK_ODDS[0];
+    const cards = pack.id.startsWith("custom:")
+      ? publishedCustomBatches.find((batch) => `custom:${batch.id}` === pack.id)?.cards || []
+      : BUILTIN_EDITIONS.find((batch) => batch.packId === pack.id)?.cards || [];
+    if (!cards.length) return [];
+    return Object.keys(RARITY).map((rarity) => [rarity, (cards.filter((card) => card.rarity === rarity).length / cards.length) * 100]);
+  };
   const [adminSyncLog, setAdminSyncLog] = useState(null); // resultado do último sync
   const [adminSyncing, setAdminSyncing] = useState(false);
   const [adminConfigSaving, setAdminConfigSaving] = useState(false);
@@ -2050,7 +2073,8 @@ function App() {
     setMeta(data.meta);
     setHist(data.hist);
     if (data.twitchPoints !== undefined && data.twitchPoints !== null) setTwitchPoints(data.twitchPoints);
-    setOpening({ pack, cards, ownedBefore, initialPhase: "pack", again: () => openPack(pack, null, extra), againLabel: "Abrir outro" });
+    const canBuyAgain = !!extra?.spendTwitchPoints && (data.twitchPoints ?? twitchPoints) >= pack.twitchCost;
+    setOpening({ pack, cards, ownedBefore, initialPhase: "pack", again: canBuyAgain ? () => openPack(pack, null, extra) : null, againLabel: "Abrir outro" });
     return true;
   };
 
@@ -2091,9 +2115,32 @@ function App() {
       }
     }
   };
-  const startTrade = (rarity) => {
-    if (duplicatesOf(rarity) < TRADE_COST) return;
-    setTradePreview({ rarity, picks: pickDuplicates(rarity, collection, TRADE_COST) });
+  const startTrade = async (rarity) => {
+    if (tradeCheckingRef.current) return;
+    const generation = tradeRequestGeneration.current;
+    tradeCheckingRef.current = true;
+    setTradeChecking(true);
+    try {
+      const latestCollection = await refreshTradeCollection(generation);
+      if (generation !== tradeRequestGeneration.current) return;
+      if (!latestCollection) {
+        setToast("Não foi possível atualizar a coleção. Tenta novamente.");
+        setTimeout(() => setToast(null), 3000);
+        return;
+      }
+      const available = duplicatesOf(rarity, latestCollection);
+      if (available < TRADE_COST) {
+        setToast(`Tens ${available}/${TRADE_COST} duplicados de raridade ${RARITY[rarity].label.toLowerCase()} disponíveis.`);
+        setTimeout(() => setToast(null), 3000);
+        return;
+      }
+      setTradePreview({ rarity, picks: pickDuplicates(rarity, latestCollection, TRADE_COST) });
+    } finally {
+      if (generation === tradeRequestGeneration.current) {
+        tradeCheckingRef.current = false;
+        setTradeChecking(false);
+      }
+    }
   };
   const confirmTrade = async () => {
     if (!tradePreview) return;
@@ -3101,7 +3148,7 @@ function App() {
             <input value={codeInput} onChange={(e) => setCodeInput(e.target.value.toUpperCase())} onKeyDown={(e) => e.key === "Enter" && redeemCode()} placeholder="EX: ELIGA2026" maxLength={16} aria-label="Código promocional"
               style={{ flex: 1, minWidth: 140, padding: "10px 14px", borderRadius: 10, border: "1px solid #22304d", background: "#0A1126", color: "#E7EEF8", fontFamily: FONT, fontSize: 13, letterSpacing: 2, outline: "none" }} />
             <button onClick={redeemCode} style={{ ...btn(true), padding: "10px 18px", fontSize: 12 }}>Resgatar</button>
-            <div style={{ flexBasis: "100%", fontSize: 11, color: "#6f87a8" }}>Os códigos são revelados durante as transmissões na Twitch e nas redes da eLiga. Cada código vale um pack e só pode ser usado uma vez por conta.</div>
+            <div style={{ flexBasis: "100%", fontSize: 11, color: "#6f87a8" }}>Os códigos são revelados durante as transmissões na Twitch e nas redes da eLiga. Cada código dá uma recompensa e só pode ser usado uma vez por conta.</div>
           </div>
 
           {/* probabilidades públicas */}
@@ -3111,14 +3158,14 @@ function App() {
             </button>
             {showOdds && (
               <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 14 }}>
-                {[["Pack Base", 0], ["Pack Finals 25/26", 1]].map(([nome, k]) => (
-                  <div key={k} style={{ flex: 1, minWidth: 240, background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "14px 18px" }}>
-                    <div style={{ fontFamily: FONT, fontSize: 12, letterSpacing: 1.5, color: "#1BF5A3", marginBottom: 10 }}>{nome.toUpperCase()} — POR CARTA</div>
-                    {PACK_ODDS[k].map(([rar, pct]) => (
+                {storePacks.filter((pack) => !pack.locked).map((pack) => (
+                  <div key={pack.id} style={{ flex: 1, minWidth: 240, background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, padding: "14px 18px" }}>
+                    <div style={{ fontFamily: FONT, fontSize: 12, letterSpacing: 1.5, color: pack.accent, marginBottom: 10 }}>{pack.name.toUpperCase()} — POR CARTA</div>
+                    {oddsForPack(pack).filter(([, pct]) => pct > 0).map(([rar, pct]) => (
                       <div key={rar} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
                         <span style={{ width: 11, height: 11, borderRadius: 3, background: RARITY[rar].frame, flexShrink: 0 }} />
                         <span style={{ fontSize: 13, color: "#c4d2e6", flex: 1 }}>{RARITY[rar].label}</span>
-                        <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, color: "#fff" }}>{pct}%</span>
+                        <span style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, color: "#fff" }}>{Number.isInteger(pct) ? pct : pct.toFixed(1)}%</span>
                       </div>
                     ))}
                   </div>
@@ -3130,14 +3177,14 @@ function App() {
           {/* garantia (pity) */}
           <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12, color: "#9FB0C8", background: "#0E162E", border: "1px solid #B45CFF44", borderRadius: 12, padding: "10px 14px" }}>
             <span style={{ fontFamily: FONT, letterSpacing: 1.5, color: "#B45CFF", flexShrink: 0 }}>🛡 GARANTIA</span>
-            <span style={{ flex: 1, minWidth: 200 }}>Ao 10º pack seguido sem carta Épica ou superior, o pack traz pelo menos uma garantida.</span>
-            <span style={{ fontFamily: FONT, fontWeight: 700, color: (meta.pity || 0) >= 7 ? "#B45CFF" : "#c4d2e6", whiteSpace: "nowrap" }}>{meta.pity || 0}/10 sem Épica</span>
+            <span style={{ flex: 1, minWidth: 200 }}>Depois de 9 packs seguidos sem carta Épica ou superior, o próximo Pack Base traz pelo menos uma garantida.</span>
+            <span style={{ fontFamily: FONT, fontWeight: 700, color: (meta.pity || 0) >= 7 ? "#B45CFF" : "#c4d2e6", whiteSpace: "nowrap" }}>{Math.min(meta.pity || 0, 9)}/9 até à garantia</span>
           </div>
 
           {/* histórico de aberturas */}
           {hist.length > 0 && (
             <div style={{ marginTop: 32 }}>
-              <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 18, margin: "0 0 12px", color: "#fff" }}>Últimas aberturas</h2>
+              <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 18, margin: "0 0 12px", color: "#fff" }}>Atividade recente</h2>
               <div style={{ background: "#0E162E", border: "1px solid #22304d", borderRadius: 14, overflow: "hidden" }}>
                 {hist.slice(0, 10).map((h, i) => {
                   const dt = new Date(h.t);
@@ -3184,7 +3231,7 @@ function App() {
               const cost = mode === "rand" ? TRADE_COST : TRADE_DIRECT;
               const have = duplicatesOf(rar);
               const ready = have >= cost;
-              const actionEnabled = !tradeChecking && (mode === "choose" || ready);
+              const actionEnabled = !tradeChecking;
               return (
                 <div key={rar + mode} style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap", background: "#0E162E", border: `1px solid ${ready ? r.color + "66" : "#22304d"}`, borderRadius: 16, padding: "18px 20px", boxShadow: ready ? `0 0 24px ${r.glow}` : "none" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 210 }}>
@@ -3211,7 +3258,7 @@ function App() {
                       <div style={{ width: `${Math.min(100, (have / cost) * 100)}%`, height: "100%", background: ready ? `linear-gradient(90deg, ${r.color}, #1BF5A3)` : r.color + "88", transition: "width 400ms" }} />
                     </div>
                   </div>
-                  <button onClick={() => { if (mode === "rand") startTrade(rar); else startDirectTrade(rar); }} disabled={!actionEnabled} style={{ ...btn(actionEnabled), opacity: actionEnabled ? 1 : 0.35, cursor: actionEnabled ? "pointer" : "not-allowed" }}>{mode === "rand" ? "Trocar" : tradeChecking ? "A verificar…" : "Escolher carta"}</button>
+                  <button onClick={() => { if (mode === "rand") startTrade(rar); else startDirectTrade(rar); }} disabled={!actionEnabled} style={{ ...btn(actionEnabled), opacity: actionEnabled ? 1 : 0.35, cursor: actionEnabled ? "pointer" : "not-allowed" }}>{tradeChecking ? "A verificar…" : mode === "rand" ? (ready ? "Trocar" : "Verificar") : "Escolher carta"}</button>
                 </div>
               );
             })}
@@ -3465,7 +3512,7 @@ function App() {
             <div>
               <h1 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 30, margin: 0 }}>Escolhas</h1>
               <p style={{ color: "#8fa3bd", fontSize: 14, marginTop: 6, maxWidth: 620 }}>
-                Três conjuntos de 5 cartas, renovados a cada 6 horas. Em cada conjunto podes gastar 1 Escolha: as cartas juntam-se, baralham, e escolhes uma às cegas. Regeneras sempre 1 Escolha por cada 6h decorridas, até ao limite de 10; objetivos e códigos respeitam o mesmo limite.
+                Três conjuntos normais e um premium, cada um com 5 cartas e renovado a cada 6 horas. Cada conjunto normal custa 1 Escolha; o premium custa 3 e não contém cartas Comuns. Regeneras 1 Escolha por cada 6 horas decorridas, até ao limite de 10; objetivos e códigos respeitam o mesmo limite.
               </p>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -4278,7 +4325,7 @@ function App() {
           <div onClick={(e) => e.stopPropagation()} style={{ width: 640, maxWidth: "100%", maxHeight: "90vh", overflowY: "auto", background: "#0E162E", border: `1px solid ${RARITY[tradePreview.rarity].color}55`, borderRadius: 18, padding: 24, animation: "pop 300ms ease-out" }}>
             <div style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, color: "#fff" }}>Confirmar troca</div>
             <div style={{ fontSize: 13, color: "#8fa3bd", marginTop: 6 }}>
-              Estes duplicados <span style={{ color: RARITY[tradePreview.rarity].color }}>{RARITY[tradePreview.rarity].label.toLowerCase()}s</span> vão ser usados — ficas sempre com pelo menos 1 cópia de cada carta:
+              Estes duplicados <span style={{ color: RARITY[tradePreview.rarity].color }}>{tradePreview.rarity === "comum" ? "comuns" : `${RARITY[tradePreview.rarity].label.toLowerCase()}s`}</span> vão ser usados — ficas sempre com pelo menos 1 cópia de cada carta:
             </div>
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center", margin: "20px 0" }}>
               {Object.entries(tradePreview.picks).map(([id, n]) => {
@@ -4344,7 +4391,7 @@ function App() {
         <div onClick={() => setDirectTrade(null)} style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(3,6,12,0.92)", overflowY: "auto", padding: "30px 16px", cursor: "pointer" }}>
           <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: 860, margin: "0 auto", background: "#0E162E", border: "1px solid #39E6FF44", borderRadius: 18, padding: 22, cursor: "default" }}>
             <h2 style={{ fontFamily: FONT, fontWeight: 700, fontSize: 20, margin: 0, color: "#fff" }}>Troca à escolha — escolhe a tua carta {RARITY[RARITY_UP[directTrade]].label}</h2>
-            <div style={{ fontSize: 13, color: "#8fa3bd", margin: "8px 0 18px" }}>Custa {TRADE_DIRECT} duplicados {RARITY[directTrade].label}. Escolhe a carta e confirma antes de fazer a troca.</div>
+            <div style={{ fontSize: 13, color: "#8fa3bd", margin: "8px 0 18px" }}>Custa {TRADE_DIRECT} duplicados de raridade {RARITY[directTrade].label.toLowerCase()}. Escolhe a carta e confirma antes de fazer a troca.</div>
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
               {POOL.filter((c) => c.rarity === RARITY_UP[directTrade]).sort((a, b) => b.ovr - a.ovr).map((c) => (
                 <div key={c.id} data-direct-trade-card={c.id} onClick={() => { directTradeReturnId.current = c.id; setDirectTradeConfirm({ rarity: directTrade, card: c }); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); directTradeReturnId.current = c.id; setDirectTradeConfirm({ rarity: directTrade, card: c }); } }} role="button" tabIndex={0} aria-label={`Escolher ${c.name}`} style={{ cursor: "pointer", textAlign: "center" }}>

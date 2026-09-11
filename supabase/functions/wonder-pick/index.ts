@@ -86,7 +86,7 @@ Deno.serve(async (req: Request) => {
   const meta: Record<string, unknown> = { ...prevMeta, escUso: { ...((prevMeta.escUso as Record<string, number>) ?? {}) } };
   const today = todayStr();
   const escUso = meta.escUso as Record<string, number>;
-  escUso[today] = (escUso[today] || 0) + 1;
+  escUso[today] = (escUso[today] || 0) + cost;
 
   const hist: unknown[] = Array.isArray(state.hist) ? [...(state.hist as unknown[])] : [];
   hist.unshift({ t: Date.now(), pack: "Escolha 🎯", ids: [cardId] });
